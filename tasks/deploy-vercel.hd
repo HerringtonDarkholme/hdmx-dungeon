@@ -1,0 +1,37 @@
+## Prepares the game as a Vercel function, in `.vercel/output`. Run it with
+## `hd build` and then `hd run deploy-vercel --engine node`, and upload the
+## result with `vercel deploy --prebuilt`.
+
+use dep.server_sdk.deployment.{
+    Artifacts,
+    Deployment,
+    DeploymentError,
+    SupervisorPolicy,
+    VercelOptions,
+    vercel,
+}
+
+pub fn main!() -> Result[void, DeploymentError] $ Console + Deployment:
+    receipt := vercel!(
+        VercelOptions {
+            name: "dungeon",
+            artifacts: Artifacts {
+                wasm: "build/debug/hdmx-dungeon.wasm",
+                bindings: "build/debug/hdmx-dungeon.host.mjs",
+                output: ".vercel/output",
+            },
+            # The game keeps nothing between requests, so any worker can play
+            # any turn.
+            supervisor: SupervisorPolicy {
+                workers: 4,
+                startup_ms: 3000,
+                drain_ms: 1000,
+                stop_kill_ms: 300,
+                restart_limit: 2,
+                restart_window_ms: 60000,
+                retry_after: "1",
+            },
+        },
+    )?
+    println(receipt.directory)
+    .Ok(())

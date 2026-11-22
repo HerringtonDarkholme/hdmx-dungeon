@@ -40,7 +40,7 @@ STYLE := """
   --amber: #ffc266;
   --red: #ff6b5e;
   --line: 1.162;
-  --cell: clamp(6px, min(calc(100vw / 52), calc(100vh / 49)), 20px);
+  --cell: clamp(6px, min(calc(100vw / 52), calc(100vh / 52)), 20px);
 }
 * { box-sizing: border-box; }
 html { background: var(--void); }
@@ -263,15 +263,78 @@ nav {
 }
 .pad button:hover, .pad button:focus-visible { background: var(--ink); }
 
-/* A tall, narrow window: the side panels move under the map. */
+/* The last line: who made this. A link is underlined text. */
+footer {
+  width: 80ch;
+  margin-top: calc(var(--line) * 1em);
+  color: var(--dim);
+}
+a { color: var(--ink); text-underline-offset: 0.2em; }
+a:hover, a:focus-visible {
+  outline: none;
+  background: var(--ink);
+  color: var(--glass);
+  text-decoration: none;
+  text-shadow: none;
+}
+#sound { display: none; }
+
+/* A wide touch screen has no use for the key list. A pad big enough for a
+   thumb takes its place, in the corner beside the log. */
+@media (min-aspect-ratio: 3 / 4) and (pointer: coarse) {
+  .keys { visibility: hidden; }
+  .pad {
+    position: absolute;
+    right: 1ch;
+    bottom: calc(1em + var(--line) * 2em);
+    z-index: 3;
+    grid-template: repeat(3, 3.9em) / repeat(3, 3.9em);
+  }
+  .pad button { font-size: 1.5em; }
+}
+
+/* A tall, narrow window, as on a phone. The width decides how large the
+   map can be, so nothing may spend columns on a frame: the tube's bezel and
+   the boxes around the map and the status go, and the map's 48 columns run
+   from edge to edge. The pad sits beside the status, at a size for a thumb. */
 @media (max-aspect-ratio: 3 / 4) {
-  :root { --cell: clamp(6px, min(calc(100vw / 33), calc(100vh / 56)), 20px); }
-  .bar, #game, nav { width: 50ch; }
+  :root { --cell: clamp(6px, min(calc(100vw / 28.6), calc(100vh / 49)), 24px); }
+  body { place-items: start center; }
+  .crt {
+    display: grid;
+    grid-template-columns: 26ch 22ch;
+    grid-template-areas: "bar bar" "map map" "log log" "side pad" "menu menu" "foot foot";
+    align-content: start;
+    width: 100vw;
+    min-height: 100vh;
+    padding: 0.4em calc((100vw - 48ch) / 2);
+    border-radius: 0;
+    box-shadow: none;
+  }
+  #game, nav { display: contents; }
+  .bar { grid-area: bar; width: 48ch; margin-bottom: 0.5em; }
   .bar .motto { display: none; }
-  #game { grid-template-columns: 50ch; grid-template-areas: "map" "log" "side"; }
+  .map .edge { display: none; }
+  .rows { width: 48ch; overflow: hidden; }
+  .rows > div { margin-left: -1ch; }
+  .rows > .light, .rows > .dialog { left: 0; margin-left: 0; }
+  .log { width: 48ch; margin-top: 0.4em; }
+  #log { height: calc(3em * var(--line)); }
   .legend { display: none; }
-  nav { position: absolute; right: 1ch; bottom: 1em; z-index: 3; width: 19ch; flex-direction: column-reverse; gap: 0.6em; margin: 0; }
-  .menu { display: grid; }
+  .side { width: 26ch; overflow: hidden; align-self: center; }
+  .side > div { margin-left: -2ch; }
+  .side > div:nth-child(1), .side > div:nth-child(9) { display: none; }
+  .pad {
+    grid-area: pad;
+    justify-self: end;
+    align-self: center;
+    width: 20ch;
+    height: 20ch;
+    grid-template: repeat(3, 1fr) / repeat(3, 1fr);
+  }
+  .pad button { font-size: 1.8em; }
+  .menu { grid-area: menu; margin-top: 0.6em; }
+  footer { grid-area: foot; width: 48ch; margin-top: 0.6em; }
 }
 @media (prefers-reduced-motion: reduce) {
   .crt::after, .ember, .keeper, #log li:last-child::after { animation: none; }
@@ -361,10 +424,6 @@ fn top_edge(title: string, cells: usize) -> string:
 
 fn bottom_edge(cells: usize) -> string:
     "└" + "─".repeat(cells - 2) + "┘"
-
-# A line across a panel, with a title: the start of a second part.
-fn split_edge(title: string, cells: usize) -> string:
-    "├─ $title " + "─".repeat(cells - title.len() - 5) + "┤"
 
 # `text` with spaces on both sides, to sit in the middle of `cells`.
 fn centered(text: string, cells: usize) -> string:
@@ -569,10 +628,15 @@ fn legend_lines() -> List[string]:
         boxed(sign("imp", "i", "imp") + sign("ghoul", "G", "ghoul")),
         boxed(sign("ogre", "O", "ogre") + sign("wraith", "W", "wraith")),
         boxed(sign("keeper", "K", "the Keeper") + " ".repeat(13)),
-        split_edge("KEYS", SIDE),
-        keys([("Arrows/WASD", "move")]),
-        keys([(".", "wait"), ("1 2 3", "buy")]),
-        keys([("Esc", "leave the shop")]),
+        bottom_edge(SIDE),
+    ]
+
+# The lines of the key list. A touch screen hides it and puts the pad there.
+fn keys_lines() -> List[string]:
+    [
+        top_edge("KEYS", SIDE),
+        keys([("Arrows/WASD", "move"), (".", "wait")]),
+        keys([("1 2 3", "buy"), ("Esc", "leave")]),
         bottom_edge(SIDE),
     ]
 
@@ -620,6 +684,7 @@ pub fn fragment(game: &Game, loud: bool) -> string:
         .join("")
     status := status_lines(&named).map(fn(line): "<div>$line</div>").join("")
     legend := legend_lines().map(fn(line): "<div>$line</div>").join("")
+    help := keys_lines().map(fn(line): "<div>$line</div>").join("")
     rule := "── LOG " + "─".repeat(SCREEN - 7)
     (
         "<main id=\"game\">"
@@ -627,7 +692,7 @@ pub fn fragment(game: &Game, loud: bool) -> string:
         + "<section class=\"map\"><div class=\"edge\">${top_edge("MAP", cells)}</div>"
         + "<div class=\"rows\">$map${named["light"]}${named["ending"]}${named["shop"]}</div>"
         + "<div class=\"edge\">${bottom_edge(cells)}</div></section>"
-        + "<section class=\"side\">$status<div class=\"legend\">$legend</div></section>"
+        + "<section class=\"side\">$status<div class=\"legend\">$legend<div class=\"keys\">$help</div></div></section>"
         + "<section class=\"log\"><div class=\"edge\">$rule</div>"
         + "<ol id=\"log\">${log_lines(game)}</ol></section>"
         + sound_holder(game, loud, false)
@@ -711,7 +776,7 @@ ${card(origin)}
 <script src="https://cdn.jsdelivr.net/npm/htmx.org@2.0.4/dist/htmx.min.js"></script>
 <style>$STYLE</style>
 </head>
-<body hx-on:keydown="if (event.key.startsWith('Arrow')) event.preventDefault()" hx-on:rumble="navigator.vibrate?.(event.detail.value)"><div class="crt" hx-target="#game" hx-swap="outerHTML" hx-sync="this:queue all" hx-include="#s, #q"><header class="bar"><span> * THE EMBER BELOW</span><span class="motto">a dungeon served one turn at a time</span><span>ONLINE </span></header>${fragment(game, loud)}<nav><div class="menu"><button hx-post="/new" hx-confirm="Leave this game and start a new one?">[ New game ]</button>  ${sound_switch(loud)}</div><div class="pad" hx-on::before-request="event.target.animate([{background:'#a9f0b6',color:'#08100c',boxShadow:'0 0 1.2em #a9f0b6',transform:'scale(.88)'},{}],{duration:280,easing:'ease-out'})"><button class="n" aria-label="Move north" hx-post="/move/north" hx-trigger="click, keydown[!ctrlKey&&!metaKey&&(key=='ArrowUp'||key=='w'||key=='k')] from:body">↑</button><button class="w" aria-label="Move west" hx-post="/move/west" hx-trigger="click, keydown[!ctrlKey&&!metaKey&&(key=='ArrowLeft'||key=='a'||key=='h')] from:body">←</button><button class="z" aria-label="Wait one turn" hx-post="/wait" hx-trigger="click, keydown[!ctrlKey&&!metaKey&&(key=='.'||key=='z')] from:body">·</button><button class="e" aria-label="Move east" hx-post="/move/east" hx-trigger="click, keydown[!ctrlKey&&!metaKey&&(key=='ArrowRight'||key=='d'||key=='l')] from:body">→</button><button class="s" aria-label="Move south" hx-post="/move/south" hx-trigger="click, keydown[!ctrlKey&&!metaKey&&(key=='ArrowDown'||key=='s'||key=='j')] from:body">↓</button></div></nav></div></body>
+<body hx-on:keydown="if (event.key.startsWith('Arrow')) event.preventDefault()" hx-on:rumble="navigator.vibrate?.(event.detail.value)"><div class="crt" hx-target="#game" hx-swap="outerHTML" hx-sync="this:queue all" hx-include="#s, #q"><header class="bar"><span> * THE EMBER BELOW</span><span class="motto">a dungeon served one turn at a time</span><span>ONLINE </span></header>${fragment(game, loud)}<nav><div class="menu"><button hx-post="/new" hx-confirm="Leave this game and start a new one?">[ New game ]</button>  ${sound_switch(loud)}</div><div class="pad" hx-on::before-request="event.target.animate([{background:'#a9f0b6',color:'#08100c',boxShadow:'0 0 1.2em #a9f0b6',transform:'scale(.88)'},{}],{duration:280,easing:'ease-out'})"><button class="n" aria-label="Move north" hx-post="/move/north" hx-trigger="click, keydown[!ctrlKey&&!metaKey&&(key=='ArrowUp'||key=='w'||key=='k')] from:body">↑</button><button class="w" aria-label="Move west" hx-post="/move/west" hx-trigger="click, keydown[!ctrlKey&&!metaKey&&(key=='ArrowLeft'||key=='a'||key=='h')] from:body">←</button><button class="z" aria-label="Wait one turn" hx-post="/wait" hx-trigger="click, keydown[!ctrlKey&&!metaKey&&(key=='.'||key=='z')] from:body">·</button><button class="e" aria-label="Move east" hx-post="/move/east" hx-trigger="click, keydown[!ctrlKey&&!metaKey&&(key=='ArrowRight'||key=='d'||key=='l')] from:body">→</button><button class="s" aria-label="Move south" hx-post="/move/south" hx-trigger="click, keydown[!ctrlKey&&!metaKey&&(key=='ArrowDown'||key=='s'||key=='j')] from:body">↓</button></div></nav><footer> made by <a href="https://github.com/HerringtonDarkholme/hdmx-dungeon" target="_blank" rel="noopener">hdmx</a> = <a href="https://herringtondarkholme.github.io/hd-lang/" target="_blank" rel="noopener">hd-lang</a> + <a href="https://htmx.org/" target="_blank" rel="noopener">htmx</a></footer></div></body>
 </html>
 """
 
@@ -790,7 +855,7 @@ tests:
                 named[piece.id] = piece.html(false)
             for line in status_lines(&named):
                 assert_equal(cells(line), SIDE, reason=line)
-        for line in legend_lines():
+        for line in [legend_lines()..., keys_lines()...]:
             assert_equal(cells(line), SIDE, reason=line)
 
     it("keeps every line of a dialog as wide as the dialog"):
@@ -806,7 +871,6 @@ tests:
 
     it("draws edges of the width asked for"):
         assert_equal(top_edge("MAP", 50).chars().count(), 50)
-        assert_equal(split_edge("KEYS", 30).chars().count(), 30)
         assert_equal(bottom_edge(30).chars().count(), 30)
 
     it("hides what the player has not seen"):
@@ -964,3 +1028,13 @@ tests:
         assert(html.contains("hx-on:rumble=\"navigator.vibrate?.(event.detail.value)\""))
         assert(html.contains(fragment(&game, true)))
         assert_equal(html.count("twitter:card"), 0, reason="no card image is set")
+
+    it("signs the page with links to what it is made of"):
+        html := page(&new_game(1), true, "https://example.com")
+        assert(html.contains(">hdmx</a> = "))
+        for address in [
+            "https://github.com/HerringtonDarkholme/hdmx-dungeon",
+            "https://herringtondarkholme.github.io/hd-lang/",
+            "https://htmx.org/",
+        ]:
+            assert_equal(html.count("<a href=\"$address\" target=\"_blank\" rel=\"noopener\">"), 1)

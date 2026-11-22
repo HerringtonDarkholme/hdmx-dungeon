@@ -3,6 +3,8 @@
 *The Ember Below*: a turn-based dungeon crawler that runs entirely on the
 server, drawn as a terminal in the browser.
 
+Play it at <https://hdmx-dungeon.vercel.app>.
+
 It is written in [hd](https://github.com/HerringtonDarkholme/hd-lang) on the
 [hd server SDK](https://github.com/HerringtonDarkholme/hd-server-sdk). The
 browser holds no game logic: [htmx](https://htmx.org) posts each key press,
@@ -94,8 +96,11 @@ dialog is characters, as a terminal program would draw them:
 - The font is cut down to the characters the screen uses, so the box
   characters come from the same font as the letters.
 - The text size follows the window, so the 80 columns fit a desktop and
-  the 480-pixel square of an embedded page. A tall, narrow window moves the
-  status panel under the map.
+  the 480-pixel square of an embedded page.
+- A phone held upright is too narrow for 80 columns. There the frames go,
+  the map's 48 columns run from edge to edge, and the status and a
+  thumb-sized pad sit under it. A wide touch screen swaps the key list for
+  a larger pad.
 - CSS adds only the glow, the scanlines and the torch light. The pad of
   arrows is the one part drawn as ordinary buttons.
 
@@ -188,7 +193,8 @@ there the game stays still.
 X can play a linked page inside a post, through its "player card". To turn
 it on:
 
-1. Host the game at a public `https` address.
+1. Host the game at a public `https` address, as the Vercel deployment
+   does.
 2. Put a square image for the card somewhere public, and set `CARD_IMAGE`
    at the top of [`src/view.hd`](src/view.hd) to its address.
 3. Post a link to the game.
@@ -196,6 +202,21 @@ it on:
 With `CARD_IMAGE` set, the page carries the card's tags, with the game's own
 address as the player. X decides whether an account's links may show player
 cards, so a link can still appear as a plain card.
+
+## Deploy To Vercel
+
+The game runs as one Vercel function. A task prepares it on your machine,
+and Vercel's own tool uploads it:
+
+```sh
+hd build
+hd run deploy-vercel --engine node
+vercel deploy --prebuilt --prod
+```
+
+[`tasks/deploy-vercel.hd`](tasks/deploy-vercel.hd) holds the settings. It
+starts four workers in each copy of the function. Any of them can play any
+turn, because the game travels with the request.
 
 ## Test
 
