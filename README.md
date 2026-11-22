@@ -95,12 +95,14 @@ dialog is characters, as a terminal program would draw them:
   every line.
 - The font is cut down to the characters the screen uses, so the box
   characters come from the same font as the letters.
-- The text size follows the window, so the 80 columns fit a desktop and
-  the 480-pixel square of an embedded page.
-- A phone held upright is too narrow for 80 columns. There the frames go,
-  the map's 48 columns run from edge to edge, and the status and a
-  thumb-sized pad sit under it. A wide touch screen swaps the key list for
-  a larger pad.
+- The text size follows the window, so the 80 columns always fit a desktop
+  window.
+- A small window gets a layout without frames, where the map's 48 columns
+  run from edge to edge. A phone held upright puts the status and a
+  thumb-sized pad under the map. A window that is small but not tall, such
+  as the 480-pixel square X gives an embedded page, keeps one line of
+  status above the map and the menu and a row of arrows below it.
+- A wide touch screen swaps the key list for a larger pad.
 - CSS adds only the glow, the scanlines and the torch light. The pad of
   arrows is the one part drawn as ordinary buttons.
 
@@ -246,7 +248,8 @@ hd test
 - Browsers only play sound on a page the visitor has clicked or typed in,
   which playing the game does. Sound was checked in Chrome only, and a site
   that embeds the game may not let it play sound.
-- In a square as small as X's, the text is about 9 pixels high.
+- In a square as small as X's, the text is about 14 pixels high, and the
+  status shows only the floor, level, health and gold.
 - The page loads htmx and its font from public CDNs. Without the font it
   falls back to the system's monospace, whose box characters may not line
   up as well.

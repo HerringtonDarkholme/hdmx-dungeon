@@ -298,7 +298,7 @@ a:hover, a:focus-visible {
   text-decoration: none;
   text-shadow: none;
 }
-#sound { display: none; }
+#sound, #hud { display: none; }
 
 /* A wide touch screen has no use for the key list. A pad big enough for a
    thumb takes its place, in the corner beside the log. */
@@ -356,6 +356,63 @@ a:hover, a:focus-visible {
   .pad button { font-size: 1.8em; }
   .menu { grid-area: menu; margin-top: 0.6em; }
   footer { grid-area: foot; width: 48ch; margin-top: 0.6em; }
+}
+/* A small window that is not tall: the square X gives an embedded game, or
+   a phone on its side. Only the map can be large, so the rest shrinks to
+   lines around it: the title with the credits, the status as one line, two
+   lines of log, and the menu beside a pad laid out in a row. */
+@media (min-aspect-ratio: 3 / 4) and (max-width: 620px), (min-aspect-ratio: 3 / 4) and (max-height: 520px) {
+  :root { --cell: clamp(6px, min(calc(100vw / 28.6), calc(100vh / 33.4)), 24px); }
+  .crt {
+    display: grid;
+    grid-template-columns: 29ch 19ch;
+    grid-template-areas: "bar bar" "hud hud" "map map" "log log" "menu pad";
+    align-content: center;
+    width: 100vw;
+    min-height: 100vh;
+    padding: 0.3em calc((100vw - 48ch) / 2);
+    border-radius: 0;
+    box-shadow: none;
+  }
+  #game, nav { display: contents; }
+  .bar { grid-area: bar; width: 48ch; margin: 0; }
+  .bar span:nth-child(n + 2) { display: none; }
+  footer {
+    grid-area: bar;
+    justify-self: end;
+    z-index: 1;
+    width: auto;
+    margin: 0 1ch 0 0;
+    color: var(--glass);
+    text-shadow: none;
+  }
+  footer a { color: var(--glass); }
+  footer a:hover, footer a:focus-visible { background: var(--glass); color: var(--ink); }
+  footer .by { display: none; }
+  #hud { display: block; grid-area: hud; color: var(--dim); }
+  .side { display: none; }
+  .map .edge, .log .edge { display: none; }
+  .rows { width: 48ch; overflow: hidden; }
+  .rows > div { margin-left: -1ch; }
+  .rows > .light, .rows > .dialog { left: 0; margin-left: 0; }
+  .log { width: 48ch; }
+  #log { height: calc(2em * var(--line)); }
+  .menu { grid-area: menu; align-self: center; }
+  .ask:focus-within + #mute { display: none; }
+  .pad {
+    position: static;
+    grid-area: pad;
+    align-self: center;
+    width: 19ch;
+    height: calc(2em * var(--line));
+    grid-template: 1fr / repeat(5, 1fr);
+  }
+  .pad .w { grid-area: 1 / 1; }
+  .pad .n { grid-area: 1 / 2; }
+  .pad .z { grid-area: 1 / 3; }
+  .pad .s { grid-area: 1 / 4; }
+  .pad .e { grid-area: 1 / 5; }
+  .pad button { font-size: 1.15em; }
 }
 @media (prefers-reduced-motion: reduce) {
   .crt::after, .ember, .keeper, #log li:last-child::after { animation: none; }
@@ -572,6 +629,13 @@ pub fn pieces(game: &Game) -> List[Piece]:
     points := "${game.hp}/${game.max_hp}".pad_start(8)
     let mut result = [
         Piece { id: "floor", tag: "b", class: "", body: "${game.depth}" },
+        # The status as one line, for a window too small for the panel.
+        Piece {
+            id: "hud",
+            tag: "div",
+            class: "hud$low",
+            body: "Floor <b>${game.depth}</b>/${last_depth()}  Lv <b>${game.level()}</b>  HP $health <b>${game.hp}</b>/${game.max_hp}  <span class=\"gold\">\$</span><b>${game.gold}</b>",
+        },
         Piece {
             id: "level",
             tag: "span",
@@ -710,6 +774,7 @@ pub fn fragment(game: &Game, loud: bool) -> string:
     (
         "<main id=\"game\">"
         + state_field(game, false)
+        + named["hud"]
         + "<section class=\"map\"><div class=\"edge\">${top_edge("MAP", cells)}</div>"
         + "<div class=\"rows\">$map${named["light"]}${named["ending"]}${named["shop"]}</div>"
         + "<div class=\"edge\">${bottom_edge(cells)}</div></section>"
@@ -816,7 +881,7 @@ ${card(origin)}
 <script src="https://cdn.jsdelivr.net/npm/htmx.org@2.0.4/dist/htmx.min.js"></script>
 <style>$STYLE</style>
 </head>
-<body hx-on:keydown="if (event.key.startsWith('Arrow')) event.preventDefault()" hx-on:rumble="navigator.vibrate?.(event.detail.value)"><div class="crt" hx-target="#game" hx-swap="outerHTML" hx-sync="this:queue all" hx-include="#s, #q"><header class="bar"><span> * THE EMBER BELOW</span><span class="motto">a dungeon served one turn at a time</span><span>ONLINE </span></header>${fragment(game, loud)}<nav><div class="menu"><span class="ask" tabindex="0">[ New game ]<button hx-post="/new" hx-on::after-request="this.blur()"> [ Yes, start over ]</button></span>${sound_switch(loud)}</div><div class="pad" hx-on::before-request="event.target.animate([{background:'#a9f0b6',color:'#08100c',boxShadow:'0 0 1.2em #a9f0b6',transform:'scale(.88)'},{}],{duration:280,easing:'ease-out'})"><button class="n" aria-label="Move north" hx-post="/move/north" hx-trigger="click, keydown[!ctrlKey&&!metaKey&&(key=='ArrowUp'||key=='w'||key=='k')] from:body">↑</button><button class="w" aria-label="Move west" hx-post="/move/west" hx-trigger="click, keydown[!ctrlKey&&!metaKey&&(key=='ArrowLeft'||key=='a'||key=='h')] from:body">←</button><button class="z" aria-label="Wait one turn" hx-post="/wait" hx-trigger="click, keydown[!ctrlKey&&!metaKey&&(key=='.'||key=='z')] from:body">·</button><button class="e" aria-label="Move east" hx-post="/move/east" hx-trigger="click, keydown[!ctrlKey&&!metaKey&&(key=='ArrowRight'||key=='d'||key=='l')] from:body">→</button><button class="s" aria-label="Move south" hx-post="/move/south" hx-trigger="click, keydown[!ctrlKey&&!metaKey&&(key=='ArrowDown'||key=='s'||key=='j')] from:body">↓</button></div></nav><footer> made by <a href="https://github.com/HerringtonDarkholme/hdmx-dungeon" target="_blank" rel="noopener">hdmx</a> = <a href="https://herringtondarkholme.github.io/hd-lang/" target="_blank" rel="noopener">hd-lang</a> + <a href="https://htmx.org/" target="_blank" rel="noopener">htmx</a></footer></div></body>
+<body hx-on:keydown="if (event.key.startsWith('Arrow')) event.preventDefault()" hx-on:rumble="navigator.vibrate?.(event.detail.value)"><div class="crt" hx-target="#game" hx-swap="outerHTML" hx-sync="this:queue all" hx-include="#s, #q"><header class="bar"><span> * THE EMBER BELOW</span><span class="motto">a dungeon served one turn at a time</span><span>ONLINE </span></header>${fragment(game, loud)}<nav><div class="menu"><span class="ask" tabindex="0">[ New game ]<button hx-post="/new" hx-on::after-request="this.blur()"> [ Yes, restart ]</button></span>${sound_switch(loud)}</div><div class="pad" hx-on::before-request="event.target.animate([{background:'#a9f0b6',color:'#08100c',boxShadow:'0 0 1.2em #a9f0b6',transform:'scale(.88)'},{}],{duration:280,easing:'ease-out'})"><button class="n" aria-label="Move north" hx-post="/move/north" hx-trigger="click, keydown[!ctrlKey&&!metaKey&&(key=='ArrowUp'||key=='w'||key=='k')] from:body">↑</button><button class="w" aria-label="Move west" hx-post="/move/west" hx-trigger="click, keydown[!ctrlKey&&!metaKey&&(key=='ArrowLeft'||key=='a'||key=='h')] from:body">←</button><button class="z" aria-label="Wait one turn" hx-post="/wait" hx-trigger="click, keydown[!ctrlKey&&!metaKey&&(key=='.'||key=='z')] from:body">·</button><button class="e" aria-label="Move east" hx-post="/move/east" hx-trigger="click, keydown[!ctrlKey&&!metaKey&&(key=='ArrowRight'||key=='d'||key=='l')] from:body">→</button><button class="s" aria-label="Move south" hx-post="/move/south" hx-trigger="click, keydown[!ctrlKey&&!metaKey&&(key=='ArrowDown'||key=='s'||key=='j')] from:body">↓</button></div></nav><footer><span class="by"> made by </span><a href="https://github.com/HerringtonDarkholme/hdmx-dungeon" target="_blank" rel="noopener">hdmx</a> = <a href="https://herringtondarkholme.github.io/hd-lang/" target="_blank" rel="noopener">hd-lang</a> + <a href="https://htmx.org/" target="_blank" rel="noopener">htmx</a></footer></div></body>
 </html>
 """
 
@@ -1005,6 +1070,19 @@ tests:
         update := patch(&before, &game, true).expect("armor changes the page")
         assert(update.contains("<b id=\"armor\" hx-swap-oob=\"true\">${figure("2")}</b>"))
         assert_equal(update.count("id=\"level\""), 0, reason="the level did not change")
+
+    it("sums the status up in one line that fits the map's width"):
+        for game in samples():
+            let mut named: Map[string, string] = {}
+            for piece in pieces(&game):
+                named[piece.id] = piece.html(false)
+            assert(cells(named["hud"]) <= usize(width()), reason=named["hud"])
+        let mut game = new_game(1)
+        game.monsters = []
+        before := pieces(&game)
+        act(&mut game, .Wait)
+        update := patch(&before, &game, true).expect("a turn changes the page")
+        assert_equal(update.count("id=\"hud\""), 0, reason="a quiet turn leaves the line alone")
 
     it("draws a meter of ten blocks"):
         assert_equal(meter(0, 30).count("█"), 0)
