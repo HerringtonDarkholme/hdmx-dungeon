@@ -9,10 +9,22 @@ use pkg.save.save
 use pkg.sound.name
 use std.text.StringBuilder
 
-# The address of a square image (JPG, PNG, WEBP or GIF) for the card X shows
-# for a link to the game. With one set, the page carries X's "player card"
-# tags and a post that links to the game plays it in place. Empty: no card.
-CARD_IMAGE := ""
+# Where the pictures for a shared link live: the files in `assets/`, read
+# from GitHub, because the server has no files of its own. `card.jpg` is
+# square, for X's player card, and `preview.jpg` is wide, for every other
+# preview.
+PICTURES := "https://raw.githubusercontent.com/HerringtonDarkholme/hdmx-dungeon/main/assets"
+
+# The kind of card X shows for a link to the game. "player" plays the game
+# inside the post. "summary_large_image" shows the wide picture as a link.
+CARD := "player"
+
+# The X account the card is credited to, as `@name`. Empty: no credit.
+SITE := "@hd_nvim"
+
+PICTURE_TEXT := "A green terminal screen titled The Ember Below: a dungeon map drawn in text, with the player beside an ogre and a wraith, and panels for status, legend and log."
+
+ABOUT := "A dungeon crawler drawn as a terminal and played in your browser, one turn at a time. Find the Ember on floor 5."
 
 # The widths of the screen's parts, in character cells.
 SCREEN := 80
@@ -213,6 +225,15 @@ button:hover, button:focus-visible {
 }
 button:hover *, button:focus-visible * { color: inherit; }
 button.no, button.no * { color: var(--faint); text-shadow: none; }
+/* A question asked in the page: pressing it shows its answer beside it,
+   and pressing anywhere else takes the answer away. A site that embeds the
+   page may not let it open a dialog. */
+.menu { display: flex; gap: 2ch; }
+.ask { cursor: pointer; outline: none; }
+.ask:hover { background: var(--ink); color: var(--glass); text-shadow: none; }
+.ask button { display: none; }
+.ask:focus-within { background: none; color: var(--dim); text-shadow: inherit; }
+.ask:focus-within button { display: inline; }
 
 /* The log: the newest line last, with the cursor after it. */
 #log {
@@ -739,18 +760,37 @@ pub fn rumble(game: &Game) -> string?:
     else:
         .None
 
-# The tags that let a post on X play the game in place. `origin` is the
-# public address of this server, as `https://example.com`.
+# The tags a site reads to preview a link to the game: Open Graph for most,
+# and X's own for X. `origin` is the public address of this server, as
+# `https://example.com`.
 fn card(origin: string) -> string:
-    if CARD_IMAGE == "":
-        return ""
-    """<meta name="twitter:card" content="player">
-<meta name="twitter:title" content="The Ember Below">
-<meta name="twitter:description" content="A dungeon crawler that runs on the server. Find the Ember on floor 5.">
+    player := if CARD == "player":
+        """
 <meta name="twitter:player" content="$origin/">
 <meta name="twitter:player:width" content="480">
-<meta name="twitter:player:height" content="480">
-<meta name="twitter:image" content="$CARD_IMAGE">"""
+<meta name="twitter:player:height" content="480">"""
+    else:
+        ""
+    picture := if CARD == "player": "card.jpg" else: "preview.jpg"
+    site := if SITE == "": "" else: "\n<meta name=\"twitter:site\" content=\"$SITE\">"
+    """<meta name="description" content="$ABOUT">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="The Ember Below">
+<meta property="og:title" content="The Ember Below">
+<meta property="og:description" content="$ABOUT">
+<meta property="og:url" content="$origin/">
+<meta property="og:image" content="$PICTURES/preview.jpg">
+<meta property="og:image:type" content="image/jpeg">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta property="og:image:alt" content="$PICTURE_TEXT">
+<link rel="canonical" href="$origin/">
+<meta name="twitter:card" content="$CARD">$site
+<meta name="twitter:title" content="The Ember Below">
+<meta name="twitter:description" content="$ABOUT">
+<meta name="twitter:image" content="$PICTURES/$picture">
+<meta name="twitter:image:alt" content="$PICTURE_TEXT">$player
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><rect width='16' height='16' rx='3' fill='%2308100c'/><text x='8' y='14' font-size='15' text-anchor='middle' fill='%23ffc266' font-family='monospace'>*</text></svg>">"""
 
 ## The whole page: the styles, htmx, the controls and the first fragment.
 ##
@@ -776,7 +816,7 @@ ${card(origin)}
 <script src="https://cdn.jsdelivr.net/npm/htmx.org@2.0.4/dist/htmx.min.js"></script>
 <style>$STYLE</style>
 </head>
-<body hx-on:keydown="if (event.key.startsWith('Arrow')) event.preventDefault()" hx-on:rumble="navigator.vibrate?.(event.detail.value)"><div class="crt" hx-target="#game" hx-swap="outerHTML" hx-sync="this:queue all" hx-include="#s, #q"><header class="bar"><span> * THE EMBER BELOW</span><span class="motto">a dungeon served one turn at a time</span><span>ONLINE </span></header>${fragment(game, loud)}<nav><div class="menu"><button hx-post="/new" hx-confirm="Leave this game and start a new one?">[ New game ]</button>  ${sound_switch(loud)}</div><div class="pad" hx-on::before-request="event.target.animate([{background:'#a9f0b6',color:'#08100c',boxShadow:'0 0 1.2em #a9f0b6',transform:'scale(.88)'},{}],{duration:280,easing:'ease-out'})"><button class="n" aria-label="Move north" hx-post="/move/north" hx-trigger="click, keydown[!ctrlKey&&!metaKey&&(key=='ArrowUp'||key=='w'||key=='k')] from:body">↑</button><button class="w" aria-label="Move west" hx-post="/move/west" hx-trigger="click, keydown[!ctrlKey&&!metaKey&&(key=='ArrowLeft'||key=='a'||key=='h')] from:body">←</button><button class="z" aria-label="Wait one turn" hx-post="/wait" hx-trigger="click, keydown[!ctrlKey&&!metaKey&&(key=='.'||key=='z')] from:body">·</button><button class="e" aria-label="Move east" hx-post="/move/east" hx-trigger="click, keydown[!ctrlKey&&!metaKey&&(key=='ArrowRight'||key=='d'||key=='l')] from:body">→</button><button class="s" aria-label="Move south" hx-post="/move/south" hx-trigger="click, keydown[!ctrlKey&&!metaKey&&(key=='ArrowDown'||key=='s'||key=='j')] from:body">↓</button></div></nav><footer> made by <a href="https://github.com/HerringtonDarkholme/hdmx-dungeon" target="_blank" rel="noopener">hdmx</a> = <a href="https://herringtondarkholme.github.io/hd-lang/" target="_blank" rel="noopener">hd-lang</a> + <a href="https://htmx.org/" target="_blank" rel="noopener">htmx</a></footer></div></body>
+<body hx-on:keydown="if (event.key.startsWith('Arrow')) event.preventDefault()" hx-on:rumble="navigator.vibrate?.(event.detail.value)"><div class="crt" hx-target="#game" hx-swap="outerHTML" hx-sync="this:queue all" hx-include="#s, #q"><header class="bar"><span> * THE EMBER BELOW</span><span class="motto">a dungeon served one turn at a time</span><span>ONLINE </span></header>${fragment(game, loud)}<nav><div class="menu"><span class="ask" tabindex="0">[ New game ]<button hx-post="/new" hx-on::after-request="this.blur()"> [ Yes, start over ]</button></span>${sound_switch(loud)}</div><div class="pad" hx-on::before-request="event.target.animate([{background:'#a9f0b6',color:'#08100c',boxShadow:'0 0 1.2em #a9f0b6',transform:'scale(.88)'},{}],{duration:280,easing:'ease-out'})"><button class="n" aria-label="Move north" hx-post="/move/north" hx-trigger="click, keydown[!ctrlKey&&!metaKey&&(key=='ArrowUp'||key=='w'||key=='k')] from:body">↑</button><button class="w" aria-label="Move west" hx-post="/move/west" hx-trigger="click, keydown[!ctrlKey&&!metaKey&&(key=='ArrowLeft'||key=='a'||key=='h')] from:body">←</button><button class="z" aria-label="Wait one turn" hx-post="/wait" hx-trigger="click, keydown[!ctrlKey&&!metaKey&&(key=='.'||key=='z')] from:body">·</button><button class="e" aria-label="Move east" hx-post="/move/east" hx-trigger="click, keydown[!ctrlKey&&!metaKey&&(key=='ArrowRight'||key=='d'||key=='l')] from:body">→</button><button class="s" aria-label="Move south" hx-post="/move/south" hx-trigger="click, keydown[!ctrlKey&&!metaKey&&(key=='ArrowDown'||key=='s'||key=='j')] from:body">↓</button></div></nav><footer> made by <a href="https://github.com/HerringtonDarkholme/hdmx-dungeon" target="_blank" rel="noopener">hdmx</a> = <a href="https://herringtondarkholme.github.io/hd-lang/" target="_blank" rel="noopener">hd-lang</a> + <a href="https://htmx.org/" target="_blank" rel="noopener">htmx</a></footer></div></body>
 </html>
 """
 
@@ -1027,7 +1067,20 @@ tests:
         assert(html.contains("<div class=\"pad\" hx-on::before-request=\"event.target.animate("))
         assert(html.contains("hx-on:rumble=\"navigator.vibrate?.(event.detail.value)\""))
         assert(html.contains(fragment(&game, true)))
-        assert_equal(html.count("twitter:card"), 0, reason="no card image is set")
+
+    it("tells a site that previews links what to show"):
+        html := page(&new_game(1), true, "https://example.com")
+        assert(html.contains("<meta property=\"og:title\" content=\"The Ember Below\">"))
+        assert(html.contains("<meta property=\"og:url\" content=\"https://example.com/\">"))
+        assert(html.contains("<meta property=\"og:image\" content=\"$PICTURES/preview.jpg\">"))
+        assert(html.contains("<meta name=\"twitter:card\" content=\"player\">"))
+        assert(html.contains("<meta name=\"twitter:site\" content=\"@hd_nvim\">"))
+        assert(html.contains("<meta name=\"twitter:player\" content=\"https://example.com/\">"))
+        assert(html.contains("<meta name=\"twitter:image\" content=\"$PICTURES/card.jpg\">"))
+        assert(
+            html.find("og:title").unwrap_or(0) < html.find("<style>").unwrap_or(0),
+            reason="the tags come early",
+        )
 
     it("signs the page with links to what it is made of"):
         html := page(&new_game(1), true, "https://example.com")

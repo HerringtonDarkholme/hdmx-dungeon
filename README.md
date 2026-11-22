@@ -188,20 +188,28 @@ sound switch turns it off as well.
 Browsers on Android vibrate. Safari on an iPhone has no vibration call, so
 there the game stays still.
 
-### Playing inside a post on X
+### Link previews, and playing inside a post on X
 
-X can play a linked page inside a post, through its "player card". To turn
-it on:
+The page carries the tags that sites read to preview a link: a title, a
+line about the game, and a picture. The pictures are the two files in
+[`assets/`](assets): `preview.jpg`, wide, for most sites, and `card.jpg`,
+square, for X. They are screenshots of the game, and the page points at
+them on GitHub, because the server has no files of its own.
 
-1. Host the game at a public `https` address, as the Vercel deployment
-   does.
-2. Put a square image for the card somewhere public, and set `CARD_IMAGE`
-   at the top of [`src/view.hd`](src/view.hd) to its address.
-3. Post a link to the game.
+For X the page asks for a "player card", which plays the game inside the
+post, in a 480-pixel square. X decides which sites may show one. If a post
+shows no preview at all, set `CARD` at the top of
+[`src/view.hd`](src/view.hd) to `summary_large_image`, which shows the wide
+picture as an ordinary link.
 
-With `CARD_IMAGE` set, the page carries the card's tags, with the game's own
-address as the player. X decides whether an account's links may show player
-cards, so a link can still appear as a plain card.
+X shows the game in a frame that may not open dialogs or submit forms.
+The game does neither: every control is an htmx request, and "New game"
+asks its question in the page.
+
+X no longer has a tool that checks a card. The test is to post the link.
+
+X remembers what it found at an address for about a week. After a change,
+share the address with something added, as `/?2`, to make it look again.
 
 ## Deploy To Vercel
 
