@@ -10,7 +10,7 @@ use dep.server_sdk.server.{HttpServer, serve}
 use pkg.game.{Action, Direction, Game, Ware, act, new_game}
 use pkg.save.{load, save}
 use pkg.sound.file
-use pkg.view.{fragment, page, patch, pieces, sound_switch}
+use pkg.view.{fragment, page, patch, pieces, rumble, sound_switch}
 use std.http.{Cookie, Request, Response}
 use std.random.{Random, rng}
 use std.serde.Deserialize
@@ -101,9 +101,15 @@ fn turn(visit: &Call, action: Action) -> Response $ Random:
     if game.depth != floor:
         # A new floor changes every row: the whole element is the smaller answer.
         return whole(visit, &game)
-    match patch(&before, &game, visit.loud()):
-        .Some(update) => keep(visit, html(update).set_header(.Other("HX-Reswap"), "none"), &game)
-        .None => Response::status(.NoContent)
+    let .Some(update) = patch(&before, &game, visit.loud()) else:
+        return Response::status(.NoContent)
+    response := keep(visit, html(update).set_header(.Other("HX-Reswap"), "none"), &game)
+    # A blow buzzes the phone, unless the visitor asked for quiet. htmx raises
+    # the event this header names, and the page passes it on.
+    match rumble(&game):
+        .Some(buzz) if visit.loud() =>
+            response.set_header(.Other("HX-Trigger"), "{\"rumble\":$buzz}")
+        _ => response
 
 # The WAV file that a path such as `/sound/coin.wav` names.
 fn sound_file(path: string) -> List[u8]?:

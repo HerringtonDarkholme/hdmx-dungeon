@@ -3,7 +3,7 @@
 ## only swaps what this module writes: the whole game element on a first
 ## load, and after that only the pieces that a turn changed.
 
-use pkg.game.{Game, Kind, Loot, Status, Ware, last_depth}
+use pkg.game.{Game, Kind, Loot, Sound, Status, Ware, last_depth}
 use pkg.level.{Tile, height, index, width}
 use pkg.save.save
 use pkg.sound.name
@@ -655,6 +655,25 @@ pub fn patch(before: &List[Piece], game: &Game, loud: bool) -> string?:
     out.push(state_field(game, true))
     .Some(out.build())
 
+## The buzz a phone gives for the blows of the latest turn: the milliseconds
+## to buzz and to rest, as the browser's vibration call takes them. `.None`
+## for a turn without a blow. A harder blow buzzes longer.
+pub fn rumble(game: &Game) -> string?:
+    if game.sounds.contains(Sound.Death):
+        return .Some("[400]")
+    struck := game.sounds.contains(Sound.Strike) || game.sounds.contains(Sound.Kill)
+    hurt := game.sounds.contains(Sound.Hurt) || game.sounds.contains(Sound.Fire)
+    if struck && hurt:
+        .Some("[25,45,70]")
+    else if hurt:
+        .Some("[70]")
+    else if game.sounds.contains(Sound.Kill):
+        .Some("[25,40,25]")
+    else if struck:
+        .Some("[25]")
+    else:
+        .None
+
 # The tags that let a post on X play the game in place. `origin` is the
 # public address of this server, as `https://example.com`.
 fn card(origin: string) -> string:
@@ -669,6 +688,15 @@ fn card(origin: string) -> string:
 <meta name="twitter:image" content="$CARD_IMAGE">"""
 
 ## The whole page: the styles, htmx, the controls and the first fragment.
+##
+## A pad button lights up when it sends a request, whether a click or a key
+## sent it, so a key press shows on the screen. htmx announces each request
+## on the element that makes it, and one line on the pad answers with a
+## short animation.
+##
+## A phone buzzes on a blow in the same way: the server names the buzz in a
+## header, htmx turns the header into a `rumble` event, and one line on the
+## body passes it to the browser's vibration call, where there is one.
 pub fn page(game: &Game, loud: bool, origin: string) -> string:
     """<!doctype html>
 <html lang="en">
@@ -683,7 +711,7 @@ ${card(origin)}
 <script src="https://cdn.jsdelivr.net/npm/htmx.org@2.0.4/dist/htmx.min.js"></script>
 <style>$STYLE</style>
 </head>
-<body hx-on:keydown="if (event.key.startsWith('Arrow')) event.preventDefault()"><div class="crt" hx-target="#game" hx-swap="outerHTML" hx-sync="this:queue all" hx-include="#s, #q"><header class="bar"><span> * THE EMBER BELOW</span><span class="motto">a dungeon served one turn at a time</span><span>ONLINE </span></header>${fragment(game, loud)}<nav><div class="menu"><button hx-post="/new" hx-confirm="Leave this game and start a new one?">[ New game ]</button>  ${sound_switch(loud)}</div><div class="pad"><button class="n" aria-label="Move north" hx-post="/move/north" hx-trigger="click, keydown[!ctrlKey&&!metaKey&&(key=='ArrowUp'||key=='w'||key=='k')] from:body">↑</button><button class="w" aria-label="Move west" hx-post="/move/west" hx-trigger="click, keydown[!ctrlKey&&!metaKey&&(key=='ArrowLeft'||key=='a'||key=='h')] from:body">←</button><button class="z" aria-label="Wait one turn" hx-post="/wait" hx-trigger="click, keydown[!ctrlKey&&!metaKey&&(key=='.'||key=='z')] from:body">·</button><button class="e" aria-label="Move east" hx-post="/move/east" hx-trigger="click, keydown[!ctrlKey&&!metaKey&&(key=='ArrowRight'||key=='d'||key=='l')] from:body">→</button><button class="s" aria-label="Move south" hx-post="/move/south" hx-trigger="click, keydown[!ctrlKey&&!metaKey&&(key=='ArrowDown'||key=='s'||key=='j')] from:body">↓</button></div></nav></div></body>
+<body hx-on:keydown="if (event.key.startsWith('Arrow')) event.preventDefault()" hx-on:rumble="navigator.vibrate?.(event.detail.value)"><div class="crt" hx-target="#game" hx-swap="outerHTML" hx-sync="this:queue all" hx-include="#s, #q"><header class="bar"><span> * THE EMBER BELOW</span><span class="motto">a dungeon served one turn at a time</span><span>ONLINE </span></header>${fragment(game, loud)}<nav><div class="menu"><button hx-post="/new" hx-confirm="Leave this game and start a new one?">[ New game ]</button>  ${sound_switch(loud)}</div><div class="pad" hx-on::before-request="event.target.animate([{background:'#a9f0b6',color:'#08100c',boxShadow:'0 0 1.2em #a9f0b6',transform:'scale(.88)'},{}],{duration:280,easing:'ease-out'})"><button class="n" aria-label="Move north" hx-post="/move/north" hx-trigger="click, keydown[!ctrlKey&&!metaKey&&(key=='ArrowUp'||key=='w'||key=='k')] from:body">↑</button><button class="w" aria-label="Move west" hx-post="/move/west" hx-trigger="click, keydown[!ctrlKey&&!metaKey&&(key=='ArrowLeft'||key=='a'||key=='h')] from:body">←</button><button class="z" aria-label="Wait one turn" hx-post="/wait" hx-trigger="click, keydown[!ctrlKey&&!metaKey&&(key=='.'||key=='z')] from:body">·</button><button class="e" aria-label="Move east" hx-post="/move/east" hx-trigger="click, keydown[!ctrlKey&&!metaKey&&(key=='ArrowRight'||key=='d'||key=='l')] from:body">→</button><button class="s" aria-label="Move south" hx-post="/move/south" hx-trigger="click, keydown[!ctrlKey&&!metaKey&&(key=='ArrowDown'||key=='s'||key=='j')] from:body">↓</button></div></nav></div></body>
 </html>
 """
 
@@ -906,6 +934,22 @@ tests:
         update := patch(&before, &game, true).expect("leaving changes the page")
         assert(update.contains("<div id=\"shop\" class=\"dialog\" hx-swap-oob=\"true\"></div>"))
 
+    it("buzzes for a blow, longer for a harder one, and not otherwise"):
+        let mut game = new_game(1)
+        assert_equal(rumble(&game), .None)
+        game.sounds = [.Coin, .Potion, .Stairs, .LevelUp]
+        assert_equal(rumble(&game), .None)
+        game.sounds = [.Strike]
+        assert_equal(rumble(&game), .Some("[25]"))
+        game.sounds = [.Kill, .LevelUp]
+        assert_equal(rumble(&game), .Some("[25,40,25]"))
+        game.sounds = [.Hurt]
+        assert_equal(rumble(&game), .Some("[70]"))
+        game.sounds = [.Strike, .Hurt, .Fire]
+        assert_equal(rumble(&game), .Some("[25,45,70]"))
+        game.sounds = [.Death]
+        assert_equal(rumble(&game), .Some("[400]"))
+
     it("offers the opposite of the current sound setting"):
         assert(sound_switch(true).contains("Sound: on "))
         assert(sound_switch(true).contains("name=\"q\" value=\"0\""))
@@ -916,5 +960,7 @@ tests:
         game := new_game(1)
         html := page(&game, true, "https://example.com")
         assert(html.contains("htmx.min.js"))
+        assert(html.contains("<div class=\"pad\" hx-on::before-request=\"event.target.animate("))
+        assert(html.contains("hx-on:rumble=\"navigator.vibrate?.(event.detail.value)\""))
         assert(html.contains(fragment(&game, true)))
         assert_equal(html.count("twitter:card"), 0, reason="no card image is set")

@@ -111,6 +111,10 @@ Each control on the page is one htmx element, for example:
 Requests queue in order (`hx-sync`), so fast key presses are never lost or
 shown out of order.
 
+A pad button lights up whenever it sends a request, so pressing a key shows
+on the screen as well as clicking does. htmx announces each request on the
+element that makes it, and the pad answers with a short animation.
+
 ### The server keeps nothing
 
 A visitor's whole game is about 320 bytes of text in a hidden field of the
@@ -167,6 +171,17 @@ element the browser plays as soon as it arrives:
 
 The sound setting travels in the page like the game does, so a quiet page
 simply gets no such element.
+
+### A buzz on a blow
+
+On a phone, a turn with a blow in it buzzes: a short buzz when you strike,
+a longer one when you are hit. The server names the buzz in a response
+header, `HX-Trigger: {"rumble":[25,45,70]}`. htmx raises that as an event,
+and one line on the page hands it to the browser's vibration call. The
+sound switch turns it off as well.
+
+Browsers on Android vibrate. Safari on an iPhone has no vibration call, so
+there the game stays still.
 
 ### Playing inside a post on X
 
