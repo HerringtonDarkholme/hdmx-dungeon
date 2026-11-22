@@ -214,6 +214,10 @@ hd run deploy-vercel --engine node
 vercel deploy --prebuilt --prod
 ```
 
+Vercel cannot build this repository itself, so
+[`vercel.json`](vercel.json) turns off its deployments from Git pushes. A
+push that deployed would replace the game with an empty site.
+
 [`tasks/deploy-vercel.hd`](tasks/deploy-vercel.hd) holds the settings. It
 starts four workers in each copy of the function. Any of them can play any
 turn, because the game travels with the request.
