@@ -122,6 +122,11 @@ A pad button lights up whenever it sends a request, so pressing a key shows
 on the screen as well as clicking does. htmx announces each request on the
 element that makes it, and the pad answers with a short animation.
 
+On a touch screen the pad is pressed fast, and a phone reads two quick taps
+as a request to zoom and a long press as a request to select text. The
+styles turn both off: the page does not zoom, and the arrows cannot be
+selected. The rest of the page's text can still be selected and copied.
+
 ### The server keeps nothing
 
 A visitor's whole game is about 320 bytes of text in a hidden field of the

@@ -55,7 +55,8 @@ STYLE := """
   --cell: clamp(6px, min(calc(100vw / 52), calc(100vh / 52)), 20px);
 }
 * { box-sizing: border-box; }
-html { background: var(--void); }
+/* Two quick taps play two turns. They do not zoom the page. */
+html { background: var(--void); touch-action: manipulation; }
 body {
   margin: 0;
   min-height: 100vh;
@@ -264,11 +265,18 @@ nav {
   width: 80ch;
   margin-top: calc(var(--line) * 1em);
 }
+/* The pad is pressed fast and often, sometimes with two thumbs at once. A
+   press must only play a turn: it may not select an arrow as text, flash
+   the phone's grey tap mark, or pinch or drag the page. */
 .pad {
   display: grid;
   grid-template: repeat(3, 2.2em) / repeat(3, 2.2em);
   gap: 0.25em;
   white-space: normal;
+  touch-action: none;
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-tap-highlight-color: transparent;
 }
 .pad .n { grid-area: 1 / 2; }
 .pad .w { grid-area: 2 / 1; }
@@ -872,7 +880,7 @@ pub fn page(game: &Game, loud: bool, origin: string) -> string:
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
 <title>The Ember Below</title>
 ${card(origin)}
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -1145,6 +1153,15 @@ tests:
         assert(html.contains("<div class=\"pad\" hx-on::before-request=\"event.target.animate("))
         assert(html.contains("hx-on:rumble=\"navigator.vibrate?.(event.detail.value)\""))
         assert(html.contains(fragment(&game, true)))
+
+    it("keeps fast presses on the pad from selecting text or zooming the page"):
+        html := page(&new_game(1), true, "https://example.com")
+        assert(html.contains("initial-scale=1, maximum-scale=1, user-scalable=no\">"))
+        assert(html.contains("html { background: var(--void); touch-action: manipulation; }"))
+        pad := html.find("\n.pad {").unwrap_or(0)
+        rule := html.slice(pad, html.find("\n.pad .n {").unwrap_or(pad))
+        for line in ["touch-action: none;", "-webkit-user-select: none;", "  user-select: none;"]:
+            assert(rule.contains(line), reason=line)
 
     it("tells a site that previews links what to show"):
         html := page(&new_game(1), true, "https://example.com")
