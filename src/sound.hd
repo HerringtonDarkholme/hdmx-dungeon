@@ -1,0 +1,216 @@
+## The game's sound effects, made from nothing but arithmetic. Each one is a
+## short run of notes, written out as the bytes of a WAV file. The server has
+## no sound files to read.
+
+use pkg.game.Sound
+use std.random.Rng
+
+# Samples a second. Low, which suits these sounds and keeps a file small.
+RATE := +11025
+# The loudest a sample may be, of 127.
+LOUD := +44
+
+# The shape of a note's wave.
+@derive(Eq, Debug)
+enum Wave:
+    # Harsh and bright, like an old game console.
+    Square
+    # Soft and round.
+    Triangle
+    # A hiss, for blows.
+    Noise
+
+# One note: it slides from one pitch to another and fades as it goes.
+struct Note:
+    wave: Wave
+    from_hz: i32
+    to_hz: i32
+    milliseconds: i32
+
+fn note(wave: Wave, hz: i32, milliseconds: i32) -> Note:
+    Note { wave: wave, from_hz: hz, to_hz: hz, milliseconds: milliseconds }
+
+fn slide(wave: Wave, from_hz: i32, to_hz: i32, milliseconds: i32) -> Note:
+    Note { wave: wave, from_hz: from_hz, to_hz: to_hz, milliseconds: milliseconds }
+
+## The name a sound's file is served under.
+pub fn name(sound: Sound) -> string:
+    match sound:
+        .Strike => "strike"
+        .Kill => "kill"
+        .Hurt => "hurt"
+        .Fire => "fire"
+        .Coin => "coin"
+        .Potion => "potion"
+        .Gear => "gear"
+        .Stairs => "stairs"
+        .LevelUp => "levelup"
+        .Death => "death"
+        .Win => "win"
+
+fn named(text: string) -> Sound?:
+    for sound in [
+        Sound.Strike,
+        .Kill,
+        .Hurt,
+        .Fire,
+        .Coin,
+        .Potion,
+        .Gear,
+        .Stairs,
+        .LevelUp,
+        .Death,
+        .Win,
+    ]:
+        if name(sound) == text:
+            return .Some(sound)
+    .None
+
+fn score(sound: Sound) -> List[Note]:
+    match sound:
+        .Strike => [note(.Noise, 0, 45), slide(.Square, 220, 110, 70)]
+        .Kill => [note(.Noise, 0, 40), slide(.Square, 440, 98, 190)]
+        .Hurt => [slide(.Square, 196, 98, 170)]
+        .Fire => [note(.Noise, 0, 110), slide(.Triangle, 700, 200, 120)]
+        .Coin => [note(.Square, 988, 55), note(.Square, 1319, 130)]
+        .Potion => [slide(.Triangle, 300, 900, 240)]
+        .Gear => [note(.Triangle, 523, 70), note(.Triangle, 659, 70), note(.Triangle, 784, 130)]
+        .Stairs =>
+            [
+                note(.Triangle, 392, 80),
+                note(.Triangle, 330, 80),
+                note(.Triangle, 262, 80),
+                note(.Triangle, 196, 140),
+            ]
+        .LevelUp =>
+            [
+                note(.Square, 523, 80),
+                note(.Square, 659, 80),
+                note(.Square, 784, 80),
+                note(.Square, 1047, 220),
+            ]
+        .Death => [slide(.Square, 196, 49, 800)]
+        .Win =>
+            [
+                note(.Square, 523, 120),
+                note(.Square, 659, 120),
+                note(.Square, 784, 120),
+                note(.Square, 1047, 160),
+                note(.Square, 784, 90),
+                note(.Square, 1047, 420),
+            ]
+
+# Appends one note's samples. A sample is a byte, with silence at 128.
+fn render(samples: &mut List[u8], tune: &Note, dice: &mut Rng) -> void:
+    count := RATE * tune.milliseconds / 1000
+    # How far through one cycle the wave is, out of RATE.
+    let phase = +0
+    for i in 0..count:
+        hz := tune.from_hz + (tune.to_hz - tune.from_hz) * i / count
+        phase = (phase + hz) % RATE
+        # From -100 to 100.
+        shape := match tune.wave:
+            .Square =>
+                if phase * 2 < RATE: +100 else: -100
+            .Triangle => (phase * 400 / RATE - 200).abs() - 100
+            .Noise => dice.int(-100..=100)
+        # Fades to silence over the note, after a quick rise that avoids a click.
+        fade := (count - i) * 100 / count
+        rise := if i < 40: i * 100 / 40 else: +100
+        level := shape * LOUD / 100 * fade / 100 * rise / 100
+        samples.push(u8(128 + level))
+
+fn push_u32(bytes: &mut List[u8], value: u32) -> void:
+    for place in 0..4:
+        bytes.push(u8((value >> u32(place * 8)) & 0xFF))
+
+fn push_u16(bytes: &mut List[u8], value: u32) -> void:
+    for place in 0..2:
+        bytes.push(u8((value >> u32(place * 8)) & 0xFF))
+
+fn push_text(bytes: &mut List[u8], text: string) -> void:
+    for byte in text.bytes():
+        bytes.push(byte)
+
+# Wraps samples in a WAV header: one channel of 8-bit samples.
+fn wav(samples: &List[u8]) -> List[u8]:
+    let mut bytes: List[u8] = []
+    size := u32(samples.len())
+    push_text(&mut bytes, "RIFF")
+    push_u32(&mut bytes, 36 + size)
+    push_text(&mut bytes, "WAVEfmt ")
+    push_u32(&mut bytes, 16)
+    push_u16(&mut bytes, 1)
+    push_u16(&mut bytes, 1)
+    push_u32(&mut bytes, u32(RATE))
+    push_u32(&mut bytes, u32(RATE))
+    push_u16(&mut bytes, 1)
+    push_u16(&mut bytes, 8)
+    push_text(&mut bytes, "data")
+    push_u32(&mut bytes, size)
+    bytes.extend(*samples)
+    bytes
+
+## The WAV file of the sound called `text`, or `.None` for no such sound.
+pub fn file(text: string) -> List[u8]?:
+    sound := named(text)?
+    # A fixed seed, so a sound's hiss is the same every time.
+    dice := Rng::new(1)
+    let mut samples: List[u8] = []
+    for tune in score(sound):
+        render(&mut samples, &tune, dice)
+    .Some(wav(&samples))
+
+tests:
+    use pkg.game.Sound
+
+    fn u32_at(bytes: &List[u8], offset: usize) -> u32:
+        (
+            u32(bytes[offset])
+            + u32(bytes[offset + 1]) * 256
+            + u32(bytes[offset + 2]) * 65536
+            + u32(bytes[offset + 3]) * 16777216
+        )
+
+    it("writes a WAV header that matches its samples"):
+        bytes := file("coin").expect("coin is a sound")
+        assert_equal(bytes.slice(0, 4), [82u8, 73, 70, 70], reason="RIFF")
+        assert_equal(bytes.slice(8, 12), [87u8, 65, 86, 69], reason="WAVE")
+        assert_equal(u32_at(&bytes, 4), u32(bytes.len() - 8))
+        assert_equal(u32_at(&bytes, 24), 11025u32)
+        assert_equal(u32_at(&bytes, 40), u32(bytes.len() - 44))
+
+    it("makes every sound short, and none silent"):
+        for sound in [
+            Sound.Strike,
+            .Kill,
+            .Hurt,
+            .Fire,
+            .Coin,
+            .Potion,
+            .Gear,
+            .Stairs,
+            .LevelUp,
+            .Death,
+            .Win,
+        ]:
+            title := name(sound)
+            bytes := file(title).expect("every sound has a file")
+            samples := bytes.slice(44, bytes.len())
+            assert(
+                samples.len() > 500 && samples.len() < 12000,
+                reason="$title is ${samples.len()} samples",
+            )
+            assert(samples.any(fn(sample): *sample > 140u8), reason="$title makes a noise")
+
+    it("ends each sound near silence, so it does not click"):
+        bytes := file("win").expect("win is a sound")
+        last := bytes[bytes.len() - 1]
+        assert(last > 124u8 && last < 132u8)
+
+    it("repeats a sound exactly"):
+        assert_equal(file("strike"), file("strike"))
+
+    it("has no file for an unknown name"):
+        assert_equal(file("meow"), .None)
+        assert_equal(file(""), .None)

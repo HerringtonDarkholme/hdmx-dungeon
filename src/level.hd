@@ -1,0 +1,125 @@
+## The map of one dungeon floor: rooms joined by corridors.
+
+use std.cmp.{max, min}
+use std.random.Rng
+
+WIDTH := +48
+HEIGHT := +22
+
+pub fn width() -> i32:
+    WIDTH
+
+pub fn height() -> i32:
+    HEIGHT
+
+@derive(Eq, Debug)
+pub enum Tile:
+    Wall
+    Floor
+    Stairs
+    # A merchant stands here. Nothing can step onto the tile.
+    Merchant
+
+@derive(Eq, Debug)
+pub struct Room:
+    pub x: i32
+    pub y: i32
+    pub w: i32
+    pub h: i32
+
+impl Room:
+    pub fn center(&self) -> (i32, i32):
+        (self.x + self.w / 2, self.y + self.h / 2)
+
+    # Whether two rooms overlap or share a wall.
+    fn touches(&self, other: &Room) -> bool:
+        (
+            self.x <= other.x + other.w
+            && other.x <= self.x + self.w
+            && self.y <= other.y + other.h
+            && other.y <= self.y + self.h
+        )
+
+pub struct Level:
+    pub tiles: List[Tile]
+    pub rooms: List[Room]
+
+## The position of `(x, y)` in a tile list.
+pub fn index(x: i32, y: i32) -> usize:
+    usize(y * WIDTH + x)
+
+pub fn inside(x: i32, y: i32) -> bool:
+    x >= 0 && y >= 0 && x < WIDTH && y < HEIGHT
+
+fn carve_room(tiles: &mut List[Tile], room: &Room) -> void:
+    for y in room.y..(room.y + room.h):
+        for x in room.x..(room.x + room.w):
+            tiles[index(x, y)] = .Floor
+
+# An L-shaped corridor: along the row of `from`, then along the column of `to`.
+fn carve_corridor(tiles: &mut List[Tile], from: (i32, i32), to: (i32, i32)) -> void:
+    for x in min(from._0, to._0)..=max(from._0, to._0):
+        tiles[index(x, from._1)] = .Floor
+    for y in min(from._1, to._1)..=max(from._1, to._1):
+        tiles[index(to._0, y)] = .Floor
+
+## A new floor. Every room is reachable from every other room.
+pub fn generate(dice: &mut Rng) -> Level:
+    let mut tiles: List[Tile] = [for _ in 0..usize(WIDTH * HEIGHT) => Tile.Wall]
+    let mut rooms: List[Room] = []
+    for _ in 0..80:
+        if rooms.len() >= 9:
+            break
+        let w: i32 = dice.int(5..=11)
+        let h: i32 = dice.int(3..=6)
+        let x: i32 = dice.int(1..(WIDTH - w - 1))
+        let y: i32 = dice.int(1..(HEIGHT - h - 1))
+        room := Room { x: x, y: y, w: w, h: h }
+        if rooms.any(fn(other): room.touches(other)):
+            continue
+        carve_room(&mut tiles, &room)
+        match rooms.last():
+            .Some(previous) => carve_corridor(&mut tiles, previous.center(), room.center())
+            .None => pass
+        rooms.push(room)
+    Level { tiles: tiles, rooms: rooms }
+
+tests:
+    use std.random.Rng
+
+    # How many floor tiles a walk from the first room reaches.
+    fn reachable(level: &Level) -> usize:
+        let mut seen: List[bool] = [for _ in 0..level.tiles.len() => false]
+        let mut todo: List[(i32, i32)] = [level.rooms[0].center()]
+        let count = 0
+        while true:
+            let .Some(spot) = todo.pop() else:
+                break
+            if !inside(spot._0, spot._1) || seen[index(spot._0, spot._1)]:
+                continue
+            if level.tiles[index(spot._0, spot._1)] == .Wall:
+                continue
+            seen[index(spot._0, spot._1)] = true
+            count += 1
+            todo.push((spot._0 + 1, spot._1))
+            todo.push((spot._0 - 1, spot._1))
+            todo.push((spot._0, spot._1 + 1))
+            todo.push((spot._0, spot._1 - 1))
+        count
+
+    it("builds several rooms inside the border"):
+        for seed in 0..20:
+            level := generate(Rng::new(u64(seed)))
+            assert(level.rooms.len() >= 3, reason="seed $seed")
+            for x in 0..width():
+                assert_equal(level.tiles[index(x, 0)], Tile.Wall)
+                assert_equal(level.tiles[index(x, height() - 1)], Tile.Wall)
+
+    it("connects every floor tile"):
+        for seed in 0..20:
+            level := generate(Rng::new(u64(seed)))
+            floors := level.tiles.filter(fn(tile): *tile != Tile.Wall).len()
+            assert_equal(reachable(&level), floors, reason="seed $seed")
+
+    it("repeats a floor for one seed"):
+        assert_equal(generate(Rng::new(7)).rooms, generate(Rng::new(7)).rooms)

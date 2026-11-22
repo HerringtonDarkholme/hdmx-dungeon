@@ -1,0 +1,227 @@
+## A whole game as a short text token that fits in a cookie.
+##
+## The token leaves out everything the seed can rebuild: the floor's tiles and
+## what is lit. Its characters are all safe in a cookie value.
+
+use pkg.game.{Game, Item, Kind, Loot, Monster, Status, restore}
+use std.encoding.Base64
+
+FORMAT := "v3"
+
+fn kind_letter(kind: Kind) -> string:
+    match kind:
+        .Rat => "r"
+        .Bat => "b"
+        .Spider => "x"
+        .Slime => "s"
+        .Imp => "i"
+        .Ghoul => "g"
+        .Ogre => "o"
+        .Wraith => "w"
+        .Keeper => "k"
+
+fn kind_of(letter: string) -> Kind?:
+    match letter:
+        "r" => .Some(.Rat)
+        "b" => .Some(.Bat)
+        "x" => .Some(.Spider)
+        "s" => .Some(.Slime)
+        "i" => .Some(.Imp)
+        "g" => .Some(.Ghoul)
+        "o" => .Some(.Ogre)
+        "w" => .Some(.Wraith)
+        "k" => .Some(.Keeper)
+        _ => .None
+
+fn status_letter(status: Status) -> string:
+    match status:
+        .Playing => "p"
+        .Dead => "d"
+        .Won => "w"
+
+fn status_of(letter: string) -> Status?:
+    match letter:
+        "p" => .Some(.Playing)
+        "d" => .Some(.Dead)
+        "w" => .Some(.Won)
+        _ => .None
+
+fn monster_text(monster: Monster) -> string:
+    "${kind_letter(monster.kind)}-${monster.x}-${monster.y}-${monster.hp}"
+
+fn item_text(item: Item) -> string:
+    match item.loot:
+        .Potion => "p-${item.x}-${item.y}"
+        .Gold(amount) => "g-${item.x}-${item.y}-$amount"
+        .Blade => "b-${item.x}-${item.y}"
+        .Shield => "s-${item.x}-${item.y}"
+        .Ember => "e-${item.x}-${item.y}"
+
+# Eight tiles to a byte, the first tile in the lowest bit.
+fn pack(bits: &List[bool]) -> List[u8]:
+    let mut bytes: List[u8] = [for _ in 0..((bits.len() + 7) / 8) => 0u8]
+    for (i, bit) in bits.iter().enumerate():
+        if bit:
+            bytes[i / 8] |= 1u8 << u8(i % 8)
+    bytes
+
+fn unpack(bytes: &List[u8]) -> List[bool]:
+    [for byte in bytes for place in 0..8 => (byte >> u8(place)) & 1u8 == 1u8]
+
+## The token of `game`.
+pub fn save(game: &Game) -> string:
+    [
+        FORMAT,
+        "${game.seed}",
+        "${game.depth}",
+        "${game.x}",
+        "${game.y}",
+        "${game.hp}",
+        "${game.gold}",
+        "${game.turns}",
+        "${game.experience}",
+        "${game.blade}",
+        "${game.shield}",
+        status_letter(game.status),
+        if game.shopping: "1" else: "0",
+        game.monsters.map(fn(monster): monster_text(*monster)).join("_"),
+        game.items.map(fn(item): item_text(*item)).join("_"),
+        Base64.UrlNoPad.encode(pack(&game.seen)),
+    ].join(".")
+
+fn number(text: string) -> i32?:
+    text.parse::[i32]().ok()
+
+fn monster_of(text: string) -> Monster?:
+    parts := text.split("-")
+    if parts.len() != 4:
+        return .None
+    .Some(
+        Monster {
+            kind: kind_of(parts[0])?,
+            x: number(parts[1])?,
+            y: number(parts[2])?,
+            hp: number(parts[3])?,
+        },
+    )
+
+fn item_of(text: string) -> Item?:
+    parts := text.split("-")
+    if parts.len() < 3:
+        return .None
+    loot := match (parts[0], parts.len()):
+        ("p", 3) => Loot.Potion
+        ("b", 3) => Loot.Blade
+        ("s", 3) => Loot.Shield
+        ("e", 3) => Loot.Ember
+        ("g", 4) => Loot.Gold(number(parts[3])?)
+        _ => return .None
+    .Some(Item { loot: loot, x: number(parts[1])?, y: number(parts[2])? })
+
+## The game of a token, or `.None` for text that no game could have saved.
+## A browser may send anything, so every field is checked.
+pub fn load(token: string) -> Game?:
+    parts := token.split(".")
+    if parts.len() != 16 || parts[0] != FORMAT:
+        return .None
+    let mut monsters: List[Monster] = []
+    if parts[13] != "":
+        for text in parts[13].split("_"):
+            monsters.push(monster_of(text)?)
+    let mut items: List[Item] = []
+    if parts[14] != "":
+        for text in parts[14].split("_"):
+            items.push(item_of(text)?)
+    let mut game = Game {
+        seed: parts[1].parse::[u64]().ok()?,
+        depth: number(parts[2])?,
+        tiles: [],
+        seen: unpack(&Base64.UrlNoPad.decode(parts[15]).ok()?),
+        visible: [],
+        monsters: monsters,
+        items: items,
+        x: number(parts[3])?,
+        y: number(parts[4])?,
+        hp: number(parts[5])?,
+        max_hp: 0,
+        gold: number(parts[6])?,
+        turns: number(parts[7])?,
+        experience: number(parts[8])?,
+        blade: number(parts[9])?,
+        shield: number(parts[10])?,
+        log: [],
+        sounds: [],
+        status: status_of(parts[11])?,
+        shopping: parts[12] == "1",
+    }
+    if restore(&mut game): .Some(game) else: .None
+
+tests:
+    use pkg.game.{Action, Direction, Game, act, new_game}
+
+    # A game some way in, with its latest messages dropped as a save drops them.
+    fn played(seed: u64) -> Game:
+        let mut game = new_game(seed)
+        moves := [Direction.East, .South, .West, .North]
+        for turn in 0..60:
+            act(&mut game, .Move(moves[turn / 5 % 4]))
+        game.log = []
+        game.sounds = []
+        game
+
+    it("loads back the game it saved"):
+        for seed in 0..10:
+            game := played(u64(seed))
+            assert_equal(load(save(&game)), .Some(game), reason="seed $seed")
+
+    it("continues a loaded game exactly as the original"):
+        let mut original = played(3)
+        let mut loaded = load(save(&original)).expect("a saved game loads")
+        for _ in 0..30:
+            act(&mut original, .Move(.East))
+            act(&mut loaded, .Move(.East))
+        assert_equal(loaded, original)
+
+    it("fits in a cookie with room to spare"):
+        for seed in 0..10:
+            token := save(&played(u64(seed)))
+            assert(token.len() < 1000, reason="seed $seed is ${token.len()} bytes")
+            for letter in token.chars():
+                assert(
+                    letter.is_alphanumeric() || letter == '.' || letter == '-' || letter == '_',
+                    reason="a cookie value cannot hold `$letter`",
+                )
+
+    it("writes and reads every kind of monster and item"):
+        for kind in [Kind.Rat, .Bat, .Spider, .Slime, .Imp, .Ghoul, .Ogre, .Wraith, .Keeper]:
+            monster := Monster { kind: kind, x: 12, y: 7, hp: 9 }
+            assert_equal(monster_of(monster_text(monster)), .Some(monster))
+        for loot in [Loot.Potion, .Gold(40), .Blade, .Shield, .Ember]:
+            item := Item { loot: loot, x: 3, y: 20 }
+            assert_equal(item_of(item_text(item)), .Some(item))
+
+    it("keeps the level and the gear"):
+        let mut game = played(5)
+        game.experience = 60
+        game.blade = 2
+        game.shield = 1
+        loaded := load(save(&game)).expect("a saved game loads")
+        assert_equal(loaded.level(), 3)
+        assert_equal(loaded.max_hp, 40)
+        assert_equal((loaded.blade, loaded.shield), (2, 1))
+
+    it("refuses text that is not a saved game"):
+        assert_equal(load(""), .None)
+        assert_equal(load("hello"), .None)
+        assert_equal(load("v3.1.1.1.1.1.1.1.0.0.0.p.0...AAAA"), .None)
+        assert_equal(load("v0." + save(&played(1)).slice(3, save(&played(1)).len())), .None)
+
+    it("refuses a saved game that was edited into a wall"):
+        token := save(&new_game(4))
+        parts := token.split(".")
+        edited := (
+            [parts[0], parts[1], parts[2], "0", "0"].join(".")
+            + "."
+            + parts.slice(5, 16).join(".")
+        )
+        assert_equal(load(edited), .None)

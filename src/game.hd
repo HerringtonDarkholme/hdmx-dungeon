@@ -1,0 +1,989 @@
+## The rules of the game. Nothing here waits, prints or knows about HTTP.
+##
+## A game holds no generator. Each floor and each turn draws from a generator
+## seeded by the game's seed and its place in the game, so a saved game
+## continues the same way on any server.
+
+use pkg.level.{Level, Room, Tile, generate, index, inside}
+use std.cmp.{max, min}
+use std.random.Rng
+
+LAST_DEPTH := +5
+SIGHT := +8
+TOP_LEVEL := +10
+BEST_GEAR := +10
+# The most a saved game may claim, so a forged one cannot overflow a sum.
+MOST_GOLD := +1000000
+MOST_TURNS := +1000000
+MOST_EXPERIENCE := +100000
+
+pub fn last_depth() -> i32:
+    LAST_DEPTH
+
+@derive(Eq, Debug)
+pub enum Kind:
+    Rat
+    Bat
+    Spider
+    Slime
+    Imp
+    Ghoul
+    Ogre
+    Wraith
+    Keeper
+
+# How often a monster acts.
+@derive(Eq, Debug)
+enum Pace:
+    # Every other turn.
+    Slow
+    Steady
+    # Twice a turn, though it bites only once.
+    Quick
+
+# What one kind of monster is like.
+struct Breed:
+    name: string
+    health: i32
+    strongest_hit: i32
+    # The experience a kill is worth.
+    worth: i32
+    pace: Pace
+
+fn breed(kind: Kind) -> Breed:
+    match kind:
+        .Rat => Breed { name: "rat", health: 3, strongest_hit: 2, worth: 2, pace: .Steady }
+        .Bat => Breed { name: "bat", health: 2, strongest_hit: 2, worth: 3, pace: .Steady }
+        .Spider => Breed { name: "spider", health: 4, strongest_hit: 2, worth: 5, pace: .Quick }
+        .Slime => Breed { name: "slime", health: 10, strongest_hit: 4, worth: 6, pace: .Slow }
+        .Imp => Breed { name: "imp", health: 6, strongest_hit: 4, worth: 8, pace: .Steady }
+        .Ghoul => Breed { name: "ghoul", health: 11, strongest_hit: 5, worth: 10, pace: .Steady }
+        .Ogre => Breed { name: "ogre", health: 22, strongest_hit: 9, worth: 18, pace: .Slow }
+        .Wraith => Breed { name: "wraith", health: 14, strongest_hit: 7, worth: 16, pace: .Steady }
+        .Keeper => Breed { name: "Keeper", health: 70, strongest_hit: 11, worth: 60, pace: .Steady }
+
+impl Kind:
+    pub fn name(&self) -> string:
+        breed(*self).name
+
+    pub fn health(&self) -> i32:
+        breed(*self).health
+
+@derive(Eq, Debug)
+pub struct Monster:
+    pub kind: Kind
+    pub x: i32
+    pub y: i32
+    pub hp: i32
+
+@derive(Eq, Debug)
+pub enum Loot:
+    Potion
+    Gold(amount: i32)
+    # Adds one to every blow the player lands.
+    Blade
+    # Takes one from every blow the player suffers.
+    Shield
+    Ember
+
+@derive(Eq, Debug)
+pub struct Item:
+    pub loot: Loot
+    pub x: i32
+    pub y: i32
+
+@derive(Eq, Debug)
+pub enum Direction:
+    North
+    South
+    East
+    West
+
+impl Direction:
+    pub fn parse(text: string) -> Direction?:
+        match text:
+            "north" => .Some(.North)
+            "south" => .Some(.South)
+            "east" => .Some(.East)
+            "west" => .Some(.West)
+            _ => .None
+
+    fn step(&self) -> (i32, i32):
+        match *self:
+            .North => (0, -1)
+            .South => (0, 1)
+            .East => (1, 0)
+            .West => (-1, 0)
+
+## Something the merchant sells.
+@derive(Eq, Debug)
+pub enum Ware:
+    # Restores all health.
+    Draught
+    Blade
+    Shield
+
+impl Ware:
+    pub fn parse(text: string) -> Ware?:
+        match text:
+            "draught" => .Some(.Draught)
+            "blade" => .Some(.Blade)
+            "shield" => .Some(.Shield)
+            _ => .None
+
+@derive(Eq, Debug)
+pub enum Action:
+    Move(direction: Direction)
+    Wait
+    Buy(ware: Ware)
+    # Closes the merchant's shop.
+    Leave
+
+@derive(Eq, Debug)
+pub enum Status:
+    Playing
+    Dead
+    Won
+
+## Something a turn did that the page may play a sound for.
+@derive(Eq, Debug)
+pub enum Sound:
+    Strike
+    Kill
+    Hurt
+    Fire
+    Coin
+    Potion
+    Gear
+    Stairs
+    LevelUp
+    Death
+    Win
+
+@derive(Eq, Debug)
+pub struct Game:
+    pub seed: u64
+    pub depth: i32
+    pub tiles: List[Tile]
+    pub seen: List[bool]
+    pub visible: List[bool]
+    pub monsters: List[Monster]
+    pub items: List[Item]
+    pub x: i32
+    pub y: i32
+    pub hp: i32
+    pub max_hp: i32
+    pub gold: i32
+    pub turns: i32
+    pub experience: i32
+    pub blade: i32
+    pub shield: i32
+    # What happened in the latest turn.
+    pub log: List[string]
+    pub sounds: List[Sound]
+    pub status: Status
+    # Whether the player is looking at the merchant's wares.
+    pub shopping: bool
+
+# The experience that reaching `level` takes: 20, 50, 90, 140, 200 and so on.
+fn needed(level: i32) -> i32:
+    5 * (level - 1) * (level + 2)
+
+## The level that an amount of experience gives.
+pub fn level_of(experience: i32) -> i32:
+    let level = +1
+    while level < TOP_LEVEL && experience >= needed(level + 1):
+        level += 1
+    level
+
+fn full_health(level: i32) -> i32:
+    30 + 5 * (level - 1)
+
+impl Game:
+    pub fn level(&self) -> i32:
+        level_of(self.experience)
+
+    ## How far the player is from this level to the next, from 0 to 100.
+    pub fn progress(&self) -> i32:
+        level := self.level()
+        if level == TOP_LEVEL:
+            return 100
+        (self.experience - needed(level)) * 100 / (needed(level + 1) - needed(level))
+
+    ## The weakest and the strongest blow the player lands.
+    pub fn blow(&self) -> (i32, i32):
+        bonus := self.level() - 1 + self.blade
+        (2 + bonus, 5 + bonus)
+
+## A game on its first floor. The seed decides everything that follows.
+pub fn new_game(seed: u64) -> Game:
+    let mut game = Game {
+        seed: seed,
+        depth: 1,
+        tiles: [],
+        seen: [],
+        visible: [],
+        monsters: [],
+        items: [],
+        x: 0,
+        y: 0,
+        hp: full_health(1),
+        max_hp: full_health(1),
+        gold: 0,
+        turns: 0,
+        experience: 0,
+        blade: 0,
+        shield: 0,
+        log: ["You climb down into the dark. Find the Ember on floor $LAST_DEPTH."],
+        sounds: [],
+        status: .Playing,
+        shopping: false,
+    }
+    enter_floor(&mut game)
+    game
+
+fn say(game: &mut Game, line: string) -> void:
+    game.log.push(line)
+
+fn play(game: &mut Game, sound: Sound) -> void:
+    if !game.sounds.contains(sound):
+        game.sounds.push(sound)
+
+# The generator that builds and fills one floor.
+fn floor_dice(seed: u64, depth: i32) -> *mut Rng:
+    Rng::new(seed.wrapping_mul(31).wrapping_add(u64(depth)))
+
+# The generator of one turn's rolls.
+fn turn_dice(game: &Game) -> *mut Rng:
+    let stride: u64 = 0x9E3779B97F4A7C15
+    Rng::new(game.seed.wrapping_add(u64(game.turns + 1).wrapping_mul(stride)))
+
+# The floor at `depth`, with its way down and its merchant. The last floor
+# has no way down.
+fn build_floor(depth: i32, dice: &mut Rng) -> Level:
+    let mut level = generate(dice)
+    count := level.rooms.len()
+    let (x, y) = level.rooms[count - 1].center()
+    if depth != LAST_DEPTH:
+        level.tiles[index(x, y)] = .Stairs
+    # The merchant keeps to the middle of a room between the first and the
+    # last. Every tile around a room's middle is floor, so she blocks no path.
+    if count >= 3:
+        let (shop_x, shop_y) = level.rooms[count / 2].center()
+        level.tiles[index(shop_x, shop_y)] = .Merchant
+    level
+
+fn monster_at(game: &Game, x: i32, y: i32) -> usize?:
+    for (i, monster) in game.monsters.iter().enumerate():
+        if monster.x == x && monster.y == y:
+            return .Some(i)
+    .None
+
+fn item_at(game: &Game, x: i32, y: i32) -> usize?:
+    for (i, item) in game.items.iter().enumerate():
+        if item.x == x && item.y == y:
+            return .Some(i)
+    .None
+
+fn walkable(game: &Game, x: i32, y: i32) -> bool:
+    inside(x, y) && (game.tiles[index(x, y)] == .Floor || game.tiles[index(x, y)] == .Stairs)
+
+fn merchant_at(game: &Game, x: i32, y: i32) -> bool:
+    inside(x, y) && game.tiles[index(x, y)] == .Merchant
+
+fn beside_merchant(game: &Game) -> bool:
+    (
+        merchant_at(game, game.x + 1, game.y)
+        || merchant_at(game, game.x - 1, game.y)
+        || merchant_at(game, game.x, game.y + 1)
+        || merchant_at(game, game.x, game.y - 1)
+    )
+
+# A free floor tile of `room`, or `.None` when a few tries find none.
+fn free_spot(game: &Game, room: &Room, dice: &mut Rng) -> (i32, i32)?:
+    for _ in 0..20:
+        let x: i32 = dice.int(room.x..(room.x + room.w))
+        let y: i32 = dice.int(room.y..(room.y + room.h))
+        taken := (
+            (x == game.x && y == game.y)
+            || game.tiles[index(x, y)] != .Floor
+            || monster_at(game, x, y).is_some()
+            || item_at(game, x, y).is_some()
+        )
+        if !taken:
+            return .Some((x, y))
+    .None
+
+# The monsters that live at each depth. A kind listed twice is twice as common.
+fn kind_for(depth: i32, dice: &mut Rng) -> Kind:
+    locals := match depth:
+        1 => [Kind.Rat, .Rat, .Bat, .Spider]
+        2 => [Kind.Rat, .Bat, .Spider, .Slime, .Imp]
+        3 => [Kind.Spider, .Slime, .Imp, .Ghoul]
+        4 => [Kind.Slime, .Imp, .Ghoul, .Ogre, .Wraith]
+        _ => [Kind.Imp, .Ghoul, .Ogre, .Wraith, .Wraith]
+    dice.choose(locals).unwrap_or(.Rat)
+
+fn spawn(game: &mut Game, kind: Kind, room: &Room, dice: &mut Rng) -> void:
+    let .Some((x, y)) = free_spot(game, room, dice) else:
+        return
+    game.monsters.push(Monster { kind: kind, x: x, y: y, hp: kind.health() })
+
+fn drop(game: &mut Game, loot: Loot, room: &Room, dice: &mut Rng) -> void:
+    let .Some((x, y)) = free_spot(game, room, dice) else:
+        return
+    game.items.push(Item { loot: loot, x: x, y: y })
+
+# Replaces the floor with a new one and puts the player in its first room.
+fn enter_floor(game: &mut Game) -> void:
+    dice := floor_dice(game.seed, game.depth)
+    level := build_floor(game.depth, dice)
+    size := level.tiles.len()
+    game.tiles = level.tiles
+    game.seen = [for _ in 0..size => false]
+    game.visible = [for _ in 0..size => false]
+    game.monsters = []
+    game.items = []
+    let (x, y) = level.rooms[0].center()
+    game.x = x
+    game.y = y
+
+    # The goal is in the room farthest along the chain of corridors. On the
+    # last floor that is the Ember, and its Keeper stands in the same room.
+    last := level.rooms[level.rooms.len() - 1]
+    if game.depth == LAST_DEPTH:
+        let (goal_x, goal_y) = last.center()
+        game.items.push(Item { loot: .Ember, x: goal_x, y: goal_y })
+        spawn(game, .Keeper, &last, dice)
+
+    others := level.rooms.slice(1, level.rooms.len())
+    for _ in 0..(4 + game.depth * 3 / 2):
+        let .Some(room) = dice.choose(others) else:
+            break
+        spawn(game, kind_for(game.depth, dice), &room, dice)
+    for _ in 0..6:
+        let .Some(room) = dice.choose(level.rooms) else:
+            break
+        let roll: i32 = dice.int(0..3)
+        loot := if roll == 0: Loot.Potion else: Loot.Gold(dice.int(3..=12) * game.depth)
+        drop(game, loot, &room, dice)
+    # One piece of gear waits somewhere past the first room.
+    match dice.choose(others):
+        .Some(room) =>
+            drop(game, if dice.bool(): Loot.Blade else: Loot.Shield, &room, dice)
+        .None => pass
+    look(game)
+
+# Whether nothing solid lies strictly between two tiles.
+fn clear_line(tiles: &List[Tile], x0: i32, y0: i32, x1: i32, y1: i32) -> bool:
+    dx := (x1 - x0).abs()
+    dy := -(y1 - y0).abs()
+    step_x := if x0 < x1: +1 else: -1
+    step_y := if y0 < y1: +1 else: -1
+    let x = x0
+    let y = y0
+    let error = dx + dy
+    while x != x1 || y != y1:
+        if (x != x0 || y != y0) && tiles[index(x, y)] == .Wall:
+            return false
+        twice := 2 * error
+        if twice >= dy:
+            error += dy
+            x += step_x
+        if twice <= dx:
+            error += dx
+            y += step_y
+    true
+
+# Marks what the player sees now, and remembers it.
+fn look(game: &mut Game) -> void:
+    for i in 0..game.visible.len():
+        game.visible[i] = false
+    for y in (game.y - SIGHT)..=(game.y + SIGHT):
+        for x in (game.x - SIGHT)..=(game.x + SIGHT):
+            if !inside(x, y):
+                continue
+            dx := x - game.x
+            dy := y - game.y
+            if dx * dx + dy * dy > SIGHT * SIGHT:
+                continue
+            if clear_line(&game.tiles, game.x, game.y, x, y):
+                game.visible[index(x, y)] = true
+                game.seen[index(x, y)] = true
+    # A wall beside a lit floor tile is lit too, so a room shows its edges.
+    for y in (game.y - SIGHT - 1)..=(game.y + SIGHT + 1):
+        for x in (game.x - SIGHT - 1)..=(game.x + SIGHT + 1):
+            if inside(x, y) && game.tiles[index(x, y)] == .Wall && beside_lit_floor(game, x, y):
+                game.visible[index(x, y)] = true
+                game.seen[index(x, y)] = true
+
+fn beside_lit_floor(game: &Game, x: i32, y: i32) -> bool:
+    for dy in -1..=1:
+        for dx in -1..=1:
+            near_x := x + dx
+            near_y := y + dy
+            if !inside(near_x, near_y):
+                continue
+            if game.visible[index(near_x, near_y)] && game.tiles[index(near_x, near_y)] != .Wall:
+                return true
+    false
+
+# Adds experience, and raises the player's level when it is enough.
+fn earn(game: &mut Game, experience: i32) -> void:
+    before := game.level()
+    game.experience = min(game.experience + experience, MOST_EXPERIENCE)
+    after := game.level()
+    if after > before:
+        # The health a level adds arrives full.
+        game.hp += full_health(after) - game.max_hp
+        game.max_hp = full_health(after)
+        say(game, "You reach level $after. You feel stronger.")
+        play(game, .LevelUp)
+
+# Takes a blow of `strength` on the shield, and answers what got through.
+fn suffer(game: &mut Game, strength: i32) -> i32:
+    damage := max(1, strength - game.shield)
+    game.hp -= damage
+    play(game, .Hurt)
+    damage
+
+fn pick_up(game: &mut Game) -> void:
+    let .Some(i) = item_at(game, game.x, game.y) else:
+        return
+    item := game.items.remove_at(i)
+    match item.loot:
+        .Potion =>
+            healed := min(12, game.max_hp - game.hp)
+            game.hp += healed
+            say(game, "You drink a potion and recover $healed health.")
+            play(game, .Potion)
+        .Gold(amount) =>
+            game.gold = min(game.gold + amount, MOST_GOLD)
+            say(game, "You pocket $amount gold.")
+            play(game, .Coin)
+        .Blade =>
+            game.blade = min(game.blade + 1, BEST_GEAR)
+            say(game, "You find a keener blade. Your blows land harder.")
+            play(game, .Gear)
+        .Shield =>
+            game.shield = min(game.shield + 1, BEST_GEAR)
+            say(game, "You find a shield plate. Blows hurt you less.")
+            play(game, .Gear)
+        .Ember =>
+            game.status = .Won
+            say(game, "The Ember is warm in your hands. You have won.")
+            game.sounds = [.Win]
+
+impl Game:
+    ## What the merchant asks for `ware`. Gear costs more each time, and
+    ## healing costs more the deeper the floor.
+    pub fn price(&self, ware: Ware) -> i32:
+        match ware:
+            .Draught => 15 + 10 * self.depth
+            .Blade => 40 + 30 * self.blade
+            .Shield => 40 + 30 * self.shield
+
+    ## Whether `ware` would do the player any good.
+    pub fn useful(&self, ware: Ware) -> bool:
+        match ware:
+            .Draught => self.hp < self.max_hp
+            .Blade => self.blade < BEST_GEAR
+            .Shield => self.shield < BEST_GEAR
+
+# Trades gold for a ware. A trade takes no turn.
+fn buy(game: &mut Game, ware: Ware) -> void:
+    price := game.price(ware)
+    if !game.useful(ware):
+        say(game, "\"You have no need of that,\" says the merchant.")
+        return
+    if game.gold < price:
+        say(game, "\"Come back with $price gold,\" says the merchant.")
+        return
+    game.gold -= price
+    match ware:
+        .Draught =>
+            game.hp = game.max_hp
+            say(game, "You pay $price gold and drink. Your wounds close.")
+            play(game, .Potion)
+        .Blade =>
+            game.blade += 1
+            say(game, "You pay $price gold for a keener blade.")
+            play(game, .Gear)
+        .Shield =>
+            game.shield += 1
+            say(game, "You pay $price gold for a shield plate.")
+            play(game, .Gear)
+
+fn attack(game: &mut Game, i: usize, dice: &mut Rng) -> void:
+    let (weakest, strongest) = game.blow()
+    let damage: i32 = dice.int(weakest..=strongest)
+    kind := game.monsters[i].kind
+    game.monsters[i].hp -= damage
+    if game.monsters[i].hp <= 0:
+        _ := game.monsters.remove_at(i)
+        say(game, "You strike the ${kind.name()} for $damage and it falls.")
+        play(game, .Kill)
+        earn(game, breed(kind).worth)
+    else:
+        say(game, "You strike the ${kind.name()} for $damage.")
+        play(game, .Strike)
+
+# One action of the monster `i`. Answers whether it struck the player.
+fn monster_turn(game: &mut Game, i: usize, dice: &mut Rng) -> bool:
+    monster := game.monsters[i]
+    name := monster.kind.name()
+    dx := game.x - monster.x
+    dy := game.y - monster.y
+    distance := dx.abs() + dy.abs()
+    if distance == 1:
+        damage := suffer(game, dice.int(1..=breed(monster.kind).strongest_hit))
+        say(game, "The $name hits you for $damage.")
+        return true
+
+    hunting := game.visible[index(monster.x, monster.y)]
+    # An imp that sees the player from a few steps away may spit fire instead
+    # of closing in.
+    if monster.kind == .Imp && hunting && distance <= 5 && dice.bool():
+        damage := suffer(game, dice.int(2..=4))
+        say(game, "The imp spits fire at you for $damage.")
+        play(game, .Fire)
+        return true
+
+    erratic := monster.kind == .Bat && dice.bool()
+    let step = (+0, +0)
+    if hunting && !erratic:
+        along_x := (if dx > 0: +1 else: -1, +0)
+        along_y := (+0, if dy > 0: +1 else: -1)
+        first := if dx.abs() >= dy.abs(): along_x else: along_y
+        second := if dx.abs() >= dy.abs(): along_y else: along_x
+        if dx != 0 && dy != 0 && !can_enter(game, monster.x + first._0, monster.y + first._1):
+            step = second
+        else:
+            step = first
+    else if monster.kind != .Keeper && (hunting || dice.int(0..4) == 0):
+        step = dice.choose([(+0, +1), (+0, -1), (+1, +0), (-1, +0)]).unwrap_or((+0, +0))
+    x := monster.x + step._0
+    y := monster.y + step._1
+    if can_enter(game, x, y):
+        game.monsters[i].x = x
+        game.monsters[i].y = y
+    false
+
+fn can_enter(game: &Game, x: i32, y: i32) -> bool:
+    walkable(game, x, y) && !(x == game.x && y == game.y) && monster_at(game, x, y).is_none()
+
+# Every monster's part of a turn, at its own pace.
+fn monsters_turn(game: &mut Game, dice: &mut Rng) -> void:
+    for i in 0..game.monsters.len():
+        pace := breed(game.monsters[i].kind).pace
+        if pace == .Slow && game.turns % 2 == 1:
+            continue
+        struck := monster_turn(game, i, dice)
+        if pace == .Quick && !struck:
+            _ := monster_turn(game, i, dice)
+
+## Plays one turn: the player's action, then every monster's.
+pub fn act(game: &mut Game, action: Action) -> void:
+    if game.status != .Playing:
+        return
+    game.log = []
+    game.sounds = []
+    dice := turn_dice(game)
+    match action:
+        .Leave =>
+            game.shopping = false
+            return
+        .Buy(ware) =>
+            if game.shopping:
+                buy(game, ware)
+            return
+        .Wait => game.shopping = false
+        .Move(direction) =>
+            let (dx, dy) = direction.step()
+            x := game.x + dx
+            y := game.y + dy
+            if merchant_at(game, x, y):
+                # Walking into the merchant opens her shop, and takes no turn.
+                if !game.shopping:
+                    game.shopping = true
+                    say(game, "\"Gold for goods,\" says the merchant.")
+                return
+            game.shopping = false
+            match monster_at(game, x, y):
+                .Some(i) => attack(game, i, dice)
+                .None =>
+                    if !walkable(game, x, y):
+                        return
+                    game.x = x
+                    game.y = y
+                    pick_up(game)
+                    if game.tiles[index(x, y)] == .Stairs:
+                        game.depth += 1
+                        game.turns += 1
+                        say(game, "You take the stairs down to floor ${game.depth}.")
+                        play(game, .Stairs)
+                        enter_floor(game)
+                        return
+    if game.status == .Playing:
+        monsters_turn(game, dice)
+        if game.hp <= 0:
+            game.hp = 0
+            game.status = .Dead
+            say(game, "You fall on floor ${game.depth}, carrying ${game.gold} gold.")
+            game.sounds = [.Death]
+    game.turns += 1
+    look(game)
+
+fn within(value: i32, most: i32) -> bool:
+    value >= 0 && value <= most
+
+## Completes a game that was saved without its floor: rebuilds the tiles from
+## the seed and works out what is lit. Answers false, and the game must not be
+## used, when the saved values could not come from a real game.
+pub fn restore(game: &mut Game) -> bool:
+    if game.depth < 1 || game.depth > LAST_DEPTH || !within(game.experience, MOST_EXPERIENCE):
+        return false
+    game.tiles = build_floor(game.depth, floor_dice(game.seed, game.depth)).tiles
+    game.visible = [for _ in 0..game.tiles.len() => false]
+    game.max_hp = full_health(game.level())
+    game.shopping = game.shopping && beside_merchant(game)
+    sane := (
+        game.seen.len() == game.tiles.len()
+        && walkable(game, game.x, game.y)
+        && within(game.hp, game.max_hp)
+        && within(game.gold, MOST_GOLD)
+        && within(game.turns, MOST_TURNS)
+        && within(game.blade, BEST_GEAR)
+        && within(game.shield, BEST_GEAR)
+        && game.monsters.len() <= 32
+        && game.items.len() <= 32
+        && (game.hp > 0 || game.status == .Dead)
+    )
+    if !sane:
+        return false
+    for monster in game.monsters:
+        if !walkable(game, monster.x, monster.y) || monster.hp < 1 || monster.hp > 100:
+            return false
+    for item in game.items:
+        if !walkable(game, item.x, item.y):
+            return false
+        match item.loot:
+            .Gold(amount) =>
+                if !within(amount, 1000):
+                    return false
+            _ => pass
+    look(game)
+    true
+
+tests:
+    use pkg.level.{Tile, height, index, inside, width}
+
+    fn fresh(seed: u64) -> Game:
+        new_game(seed)
+
+    # A game with no monsters, so a test decides what happens.
+    fn quiet(seed: u64) -> Game:
+        let mut game = fresh(seed)
+        game.monsters = []
+        game
+
+    # A direction the player can walk in right now.
+    fn open_direction(game: &Game) -> Direction:
+        for direction in [Direction.North, .South, .East, .West]:
+            let (dx, dy) = direction.step()
+            if walkable(game, game.x + dx, game.y + dy):
+                return direction
+        panic("the player is walled in")
+
+    it("starts on a floor tile that the player can see"):
+        game := fresh(1)
+        assert_equal(game.tiles[index(game.x, game.y)], Tile.Floor)
+        assert(game.visible[index(game.x, game.y)])
+        assert_equal(game.status, Status.Playing)
+
+    it("repeats a game for one seed"):
+        first := fresh(9)
+        second := fresh(9)
+        assert_equal(first.monsters, second.monsters)
+        assert_equal(first.items, second.items)
+
+    it("moves one tile and counts the turn"):
+        let mut game = quiet(2)
+        direction := open_direction(&game)
+        let (dx, dy) = direction.step()
+        before := (game.x + dx, game.y + dy)
+        act(&mut game, .Move(direction))
+        assert_equal((game.x, game.y), before)
+        assert_equal(game.turns, 1)
+
+    it("does not walk through a wall or spend a turn on it"):
+        let mut game = quiet(3)
+        while walkable(&game, game.x, game.y - 1):
+            act(&mut game, .Move(.North))
+        turns := game.turns
+        spot := (game.x, game.y)
+        act(&mut game, .Move(.North))
+        assert_equal((game.x, game.y), spot)
+        assert_equal(game.turns, turns)
+
+    it("kills a monster by walking into it"):
+        let mut game = quiet(4)
+        direction := open_direction(&game)
+        let (dx, dy) = direction.step()
+        game.monsters.push(Monster { kind: .Rat, x: game.x + dx, y: game.y + dy, hp: 1 })
+        spot := (game.x, game.y)
+        act(&mut game, .Move(direction))
+        assert(game.monsters.is_empty())
+        assert_equal((game.x, game.y), spot, reason="an attack does not move the player")
+
+    it("lets a monster next to the player hurt it"):
+        let mut game = quiet(5)
+        direction := open_direction(&game)
+        let (dx, dy) = direction.step()
+        game.monsters.push(Monster { kind: .Wraith, x: game.x + dx, y: game.y + dy, hp: 99 })
+        act(&mut game, .Wait)
+        assert(game.hp < game.max_hp)
+
+    it("ends the game when health runs out"):
+        let mut game = quiet(6)
+        direction := open_direction(&game)
+        let (dx, dy) = direction.step()
+        game.monsters.push(Monster { kind: .Wraith, x: game.x + dx, y: game.y + dy, hp: 99 })
+        game.hp = 1
+        act(&mut game, .Wait)
+        assert_equal(game.status, Status.Dead)
+        turns := game.turns
+        act(&mut game, .Wait)
+        assert_equal(game.turns, turns, reason="a finished game ignores actions")
+
+    it("heals with a potion, up to full health"):
+        let mut game = quiet(7)
+        direction := open_direction(&game)
+        let (dx, dy) = direction.step()
+        game.items = [Item { loot: .Potion, x: game.x + dx, y: game.y + dy }]
+        game.hp = game.max_hp - 3
+        act(&mut game, .Move(direction))
+        assert_equal(game.hp, game.max_hp)
+        assert(game.items.is_empty())
+
+    it("goes down the stairs to a new floor"):
+        let mut game = quiet(8)
+        direction := open_direction(&game)
+        let (dx, dy) = direction.step()
+        game.tiles[index(game.x + dx, game.y + dy)] = .Stairs
+        act(&mut game, .Move(direction))
+        assert_equal(game.depth, 2)
+        assert_equal(game.turns, 1, reason="every change to a game counts a turn")
+
+    it("plays the same turn the same way twice"):
+        let mut first = fresh(12)
+        let mut second = fresh(12)
+        for _ in 0..40:
+            act(&mut first, .Wait)
+            act(&mut second, .Wait)
+        assert_equal(first, second)
+
+    it("restores a game from what a save keeps"):
+        let mut game = fresh(13)
+        for _ in 0..10:
+            act(&mut game, .Wait)
+        let mut saved = Game { ...game, tiles: [], visible: [] }
+        assert(restore(&mut saved))
+        assert_equal(saved, game)
+
+    it("gains a level from enough experience, with more health and harder blows"):
+        let mut game = quiet(16)
+        game.hp = 10
+        blow := game.blow()
+        earn(&mut game, 20)
+        assert_equal(game.level(), 2)
+        assert_equal(game.max_hp, 35)
+        assert_equal(game.hp, 15, reason="the added health arrives full")
+        assert_equal(game.blow(), (blow._0 + 1, blow._1 + 1))
+        assert(game.sounds.contains(Sound.LevelUp))
+
+    it("counts experience towards the next level"):
+        let mut game = quiet(16)
+        assert_equal(game.progress(), 0)
+        earn(&mut game, 10)
+        assert_equal(game.progress(), 50)
+        earn(&mut game, 100000)
+        assert_equal(game.level(), 10)
+        assert_equal(game.progress(), 100)
+
+    it("earns experience for a kill"):
+        let mut game = quiet(17)
+        direction := open_direction(&game)
+        let (dx, dy) = direction.step()
+        game.monsters.push(Monster { kind: .Ghoul, x: game.x + dx, y: game.y + dy, hp: 1 })
+        act(&mut game, .Move(direction))
+        assert_equal(game.experience, 10)
+        assert(game.sounds.contains(Sound.Kill))
+
+    it("hits harder with a blade and is hurt less behind a shield"):
+        let mut game = quiet(18)
+        direction := open_direction(&game)
+        let (dx, dy) = direction.step()
+        game.items = [Item { loot: .Blade, x: game.x + dx, y: game.y + dy }]
+        blow := game.blow()
+        act(&mut game, .Move(direction))
+        assert_equal(game.blow(), (blow._0 + 1, blow._1 + 1))
+        game.shield = 3
+        assert_equal(suffer(&mut game, 5), 2)
+        assert_equal(suffer(&mut game, 1), 1, reason="a blow always costs at least one")
+
+    it("lets a slow monster act only every other turn"):
+        let mut game = quiet(19)
+        direction := open_direction(&game)
+        let (dx, dy) = direction.step()
+        game.monsters.push(Monster { kind: .Ogre, x: game.x + dx, y: game.y + dy, hp: 99 })
+        act(&mut game, .Wait)
+        first := game.hp
+        act(&mut game, .Wait)
+        second := game.hp
+        act(&mut game, .Wait)
+        assert(first < game.max_hp, reason="it strikes on turn 0")
+        assert_equal(second, first, reason="it rests on turn 1")
+        assert(game.hp < second, reason="it strikes again on turn 2")
+
+    it("puts the Keeper beside the Ember on the last floor"):
+        let mut game = quiet(20)
+        game.depth = last_depth()
+        enter_floor(&mut game)
+        assert_equal(game.monsters.filter(fn(monster): monster.kind == Kind.Keeper).len(), 1)
+        assert_equal(game.items.filter(fn(item): item.loot == Loot.Ember).len(), 1)
+
+    it("plays every floor for a long while without breaking its rules"):
+        for depth in 1..=last_depth():
+            let mut game = fresh(u64(depth) + 30)
+            game.depth = depth
+            enter_floor(&mut game)
+            moves := [Direction.East, .East, .South, .West, .West, .North]
+            for turn in 0..400:
+                # Keep the player alive, so the monsters get every turn.
+                game.hp = game.max_hp
+                act(&mut game, .Move(moves[turn / 7 % 6]))
+                assert(walkable(&game, game.x, game.y))
+                for monster in game.monsters:
+                    assert(walkable(&game, monster.x, monster.y), reason="floor $depth, turn $turn")
+                    assert(monster.hp > 0)
+            assert(game.depth >= depth)
+
+    # Walks the player to a tile beside the merchant, by magic.
+    fn at_merchant(seed: u64) -> Game:
+        let mut game = quiet(seed)
+        for y in 0..height():
+            for x in 0..width():
+                if merchant_at(&game, x, y):
+                    game.x = x - 1
+                    game.y = y
+                    return game
+        panic("seed $seed has no merchant")
+
+    it("puts a merchant on a floor where she blocks no path"):
+        for seed in 0..20:
+            game := quiet(u64(seed))
+            merchants := game.tiles.filter(fn(tile): *tile == Tile.Merchant).len()
+            assert_equal(merchants, 1, reason="seed $seed")
+            # Flood from the player over walkable tiles: all of them are reached.
+            let mut reached: List[bool] = [for _ in 0..game.tiles.len() => false]
+            let mut todo: List[(i32, i32)] = [(game.x, game.y)]
+            let count = 0
+            while true:
+                let .Some(spot) = todo.pop() else:
+                    break
+                if !walkable(&game, spot._0, spot._1) || reached[index(spot._0, spot._1)]:
+                    continue
+                reached[index(spot._0, spot._1)] = true
+                count += 1
+                todo.push((spot._0 + 1, spot._1))
+                todo.push((spot._0 - 1, spot._1))
+                todo.push((spot._0, spot._1 + 1))
+                todo.push((spot._0, spot._1 - 1))
+            open := game.tiles.filter(fn(tile): *tile == Tile.Floor || *tile == Tile.Stairs).len()
+            assert_equal(count, open, reason="seed $seed")
+
+    it("opens the shop by walking into the merchant, without spending a turn"):
+        let mut game = at_merchant(21)
+        spot := (game.x, game.y)
+        act(&mut game, .Move(.East))
+        assert(game.shopping)
+        assert_equal((game.x, game.y), spot)
+        assert_equal(game.turns, 0)
+        act(&mut game, .Move(.East))
+        assert(game.shopping && game.log.is_empty(), reason="she greets the player once")
+
+    it("closes the shop on leaving or walking away"):
+        let mut game = at_merchant(21)
+        act(&mut game, .Move(.East))
+        act(&mut game, .Leave)
+        assert(!game.shopping)
+        act(&mut game, .Move(.East))
+        act(&mut game, .Wait)
+        assert(!game.shopping)
+
+    it("sells gear for gold, at a price that grows"):
+        let mut game = at_merchant(21)
+        act(&mut game, .Move(.East))
+        game.gold = 100
+        assert_equal(game.price(.Blade), 40)
+        act(&mut game, .Buy(.Blade))
+        assert_equal((game.blade, game.gold), (1, 60))
+        assert_equal(game.price(.Blade), 70)
+        act(&mut game, .Buy(.Shield))
+        assert_equal((game.shield, game.gold), (1, 20))
+        assert_equal(game.turns, 0, reason="trading takes no turn")
+        assert(game.shopping)
+
+    it("heals for gold, and only when the player is hurt"):
+        let mut game = at_merchant(21)
+        act(&mut game, .Move(.East))
+        game.gold = 100
+        act(&mut game, .Buy(.Draught))
+        assert_equal(game.gold, 100, reason="full health needs no draught")
+        game.hp = 4
+        act(&mut game, .Buy(.Draught))
+        assert_equal((game.hp, game.gold), (game.max_hp, 75))
+
+    it("sells nothing to a player who cannot pay, or who is not at the shop"):
+        let mut game = at_merchant(21)
+        game.gold = 100
+        act(&mut game, .Buy(.Blade))
+        assert_equal((game.blade, game.gold), (0, 100), reason="the shop is not open")
+        act(&mut game, .Move(.East))
+        game.gold = 39
+        act(&mut game, .Buy(.Blade))
+        assert_equal((game.blade, game.gold), (0, 39))
+
+    it("refuses a saved game with the player inside a wall"):
+        game := fresh(14)
+        let mut saved = Game { ...game, x: 0, y: 0 }
+        assert(!restore(&mut saved))
+
+    it("refuses a saved game from no real floor"):
+        game := fresh(15)
+        let mut deep = Game { ...game, depth: 99 }
+        assert(!restore(&mut deep))
+        let mut rich = Game { ...game, gold: 2000000000 }
+        assert(!restore(&mut rich))
+        let mut armed = Game { ...game, blade: 500 }
+        assert(!restore(&mut armed))
+        let mut healthy = Game { ...game, hp: 31 }
+        assert(!restore(&mut healthy), reason="level 1 holds 30 health")
+
+    it("wins by taking the Ember"):
+        let mut game = quiet(10)
+        direction := open_direction(&game)
+        let (dx, dy) = direction.step()
+        game.items = [Item { loot: .Ember, x: game.x + dx, y: game.y + dy }]
+        act(&mut game, .Move(direction))
+        assert_equal(game.status, Status.Won)
+
+    it("keeps every monster on a floor tile through a long game"):
+        let mut game = fresh(11)
+        moves := [Direction.North, .East, .South, .West]
+        for turn in 0..300:
+            act(&mut game, .Move(moves[turn % 4]))
+            for monster in game.monsters:
+                assert(inside(monster.x, monster.y))
+                assert(game.tiles[index(monster.x, monster.y)] != Tile.Wall)

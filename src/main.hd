@@ -1,0 +1,157 @@
+## A dungeon crawler that runs on the server. The browser holds no game
+## logic: htmx posts each key press, and the answer is what the turn changed.
+##
+## The server keeps nothing between requests. A visitor's whole game travels
+## in the page, and every request sends it back, so any copy of this program
+## can play the next turn. A cookie holds a second copy, which is how a
+## reload finds the game again.
+
+use dep.server_sdk.server.{HttpServer, serve}
+use pkg.game.{Action, Direction, Game, Ware, act, new_game}
+use pkg.save.{load, save}
+use pkg.sound.file
+use pkg.view.{fragment, page, patch, pieces, sound_switch}
+use std.http.{Cookie, Request, Response}
+use std.random.{Random, rng}
+use std.serde.Deserialize
+use std.time.s
+
+COOKIE := "delve"
+QUIET := "quiet"
+
+# `serve!` shares one value between requests. This program has nothing to share.
+struct Nothing:
+    pass
+
+# What a page sends with every request: the game it shows, and whether the
+# visitor turned the sound off.
+@derive(Deserialize)
+struct Form:
+    s: string = ""
+    q: string = ""
+
+# One request, read once. A request body can only be read one time.
+struct Call:
+    request: Request
+    form: Form
+    # Whether the address is `https`, behind a proxy or not.
+    secure: bool
+
+fn call(request: Request) -> Call:
+    form := request.form::[Form]().unwrap_or(Form {})
+    secure := request.header(.XForwardedProto).unwrap_or(request.url.scheme) == "https"
+    Call { request: request, form: form, secure: secure }
+
+impl Call:
+    # A cookie that also works where the game is embedded in another site,
+    # which browsers allow only over `https`.
+    fn cookie(&self, name: string, value: string) -> Cookie:
+        Cookie {
+            name: name,
+            value: value,
+            secure: self.secure,
+            same_site: if self.secure: .None else: .Lax
+        }
+
+    # Whether the visitor wants sound. The page says so; a first load, which
+    # has no page yet, goes by the cookie.
+    fn loud(&self) -> bool:
+        if self.form.q != "":
+            return self.form.q != "1"
+        self.request.cookie(QUIET).is_none()
+
+    # The game the page shows, when it sent a real one.
+    fn shown(&self) -> Game?:
+        if self.form.s == "": .None else: load(self.form.s)
+
+    # The game to resume on a first load.
+    fn remembered(&self) -> Game?:
+        load(self.request.cookie(COOKIE)?)
+
+    # The public address of this server, as `https://example.com`.
+    fn origin(&self) -> string:
+        scheme := if self.secure: "https" else: "http"
+        port := match self.request.url.port:
+            .Some(port) => ":$port"
+            .None => ""
+        "$scheme://${self.request.url.host}$port"
+
+fn html(body: string) -> Response:
+    Response::status(.Ok).set_text(body).set_header(.ContentType, "text/html; charset=utf-8")
+
+# Remembers `game` in the visitor's cookie, for the next reload.
+fn keep(visit: &Call, response: Response, game: &Game) -> Response:
+    response.set_cookie(visit.cookie(COOKIE, save(game)))
+
+# Sends the whole game element. Used when the page's own copy cannot be
+# trusted to match: a new game, a new floor, or a page that sent none.
+fn whole(visit: &Call, game: &Game) -> Response:
+    keep(visit, html(fragment(game, visit.loud())), game)
+
+fn turn(visit: &Call, action: Action) -> Response $ Random:
+    let .Some(shown) = visit.shown() else:
+        # The page sent no game. Play from the remembered one, or a new one.
+        let mut game = visit.remembered().unwrap_or(new_game(rng().next_u64()))
+        act(&mut game, action)
+        return whole(visit, &game)
+    let mut game = shown
+    before := pieces(&game)
+    floor := game.depth
+    act(&mut game, action)
+    if game.depth != floor:
+        # A new floor changes every row: the whole element is the smaller answer.
+        return whole(visit, &game)
+    match patch(&before, &game, visit.loud()):
+        .Some(update) => keep(visit, html(update).set_header(.Other("HX-Reswap"), "none"), &game)
+        .None => Response::status(.NoContent)
+
+# The WAV file that a path such as `/sound/coin.wav` names.
+fn sound_file(path: string) -> List[u8]?:
+    file(path.strip_prefix("/sound/")?.strip_suffix(".wav")?)
+
+# Turns sound off when it is on, and on when it is off, and answers with the
+# switch as it now reads.
+fn switch_sound(visit: &Call) -> Response:
+    if visit.loud():
+        html(sound_switch(false)).set_cookie(visit.cookie(QUIET, "1"))
+    else:
+        html(sound_switch(true))
+            .set_cookie(Cookie { ...visit.cookie(QUIET, ""), max_age: .Some(s(0)) })
+
+fn handle!(request: Request, _nothing: &mut Nothing) -> Response $ Random:
+    method := request.method
+    path := request.url.path
+    visit := call(request)
+    match (method, path):
+        (.Get, "/") =>
+            game := match visit.remembered():
+                .Some(game) => game
+                .None => new_game(rng().next_u64())
+            body := page(&game, visit.loud(), visit.origin())
+            keep(&visit, html(body).set_header(.CacheControl, "no-store"), &game)
+        (.Get, path) =>
+            let .Some(bytes) = sound_file(path) else:
+                return Response::status(.NotFound)
+            Response::status(.Ok)
+                .set_bytes(bytes)
+                .set_header(.ContentType, "audio/wav")
+                .set_header(.CacheControl, "public, max-age=86400")
+        (.Post, "/wait") => turn(&visit, .Wait)
+        (.Post, "/leave") => turn(&visit, .Leave)
+        (.Post, "/new") => whole(&visit, &new_game(rng().next_u64()))
+        (.Post, "/sound") => switch_sound(&visit)
+        (.Post, path) =>
+            let .Some(action) = action_of(path) else:
+                return Response::status(.NotFound)
+            turn(&visit, action)
+        _ => Response::status(.NotFound)
+
+# The action that a path such as `/move/north` or `/buy/blade` names.
+fn action_of(path: string) -> Action?:
+    match path.strip_prefix("/move/"):
+        .Some(direction) => .Some(.Move(Direction::parse(direction)?))
+        .None => .Some(.Buy(Ware::parse(path.strip_prefix("/buy/")?)?))
+
+pub fn main!() -> void $ HttpServer + Random:
+    nothing := box(Nothing {})
+    serve!(8, nothing, handle).expect("server")

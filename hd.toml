@@ -1,0 +1,9 @@
+[package]
+name = "hdmx-dungeon"
+
+[capabilities]
+"dep.server_sdk.server.HttpServer" = true
+Random = true
+
+[dependencies]
+server_sdk = "github.com/HerringtonDarkholme/hd-server-sdk@0.1.0"
